@@ -11,8 +11,8 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
-from pronav.normalizers import ensure_upper_safe
-from pronav.utils import format_date_br
+from core.normalizers import ensure_upper_safe
+from core.utils import format_date_br
 
 
 class PDFService:
@@ -27,7 +27,7 @@ class PDFService:
         self.MED_PAD = 4
         self.BASE_TITLE_FONT_SIZE = 9.0
         self.BASE_LABEL_FONT_SIZE = 8.0
-        self.BASE_VALUE_FONT_SIZE = 7.5
+        self.BASE_VALUE_FONT_SIZE = 7.7
 
     def setup_fonts(self):
         self.FONT_REGULAR = 'Helvetica'
@@ -125,13 +125,13 @@ class PDFService:
             equip_cols = [equip_col] * 4
             equip_data = [
                 [Paragraph("EQUIPAMENTO", ParagraphStyle(name='eh', fontName=self.FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                 Paragraph("FABRICANTE", ParagraphStyle(name='eh', fontName=self.FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                 Paragraph("MODELO", ParagraphStyle(name='eh', fontName=self.FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                 Paragraph("Nº DE SÉRIE", ParagraphStyle(name='eh', fontName=self.FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1))],
+                Paragraph("FABRICANTE", ParagraphStyle(name='eh', fontName=self.FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
+                Paragraph("MODELO", ParagraphStyle(name='eh', fontName=self.FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
+                Paragraph("Nº DE SÉRIE", ParagraphStyle(name='eh', fontName=self.FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1))],
                 [Paragraph(ensure_upper_safe(first_eq.get('equipamento') or ''), ParagraphStyle(name='ev', fontName=self.FONT_REGULAR, fontSize=styles['td'].fontSize)),
-                 Paragraph(ensure_upper_safe(first_eq.get('fabricante') or ''), ParagraphStyle(name='ev', fontName=self.FONT_REGULAR, fontSize=styles['td'].fontSize)),
-                 Paragraph(ensure_upper_safe(first_eq.get('modelo') or ''), ParagraphStyle(name='ev', fontName=self.FONT_REGULAR, fontSize=styles['td'].fontSize)),
-                 Paragraph(ensure_upper_safe(first_eq.get('numero_serie') or ''), ParagraphStyle(name='ev', fontName=self.FONT_REGULAR, fontSize=styles['td'].fontSize))],
+                Paragraph(ensure_upper_safe(first_eq.get('fabricante') or ''), ParagraphStyle(name='ev', fontName=self.FONT_REGULAR, fontSize=styles['td'].fontSize)),
+                Paragraph(ensure_upper_safe(first_eq.get('modelo') or ''), ParagraphStyle(name='ev', fontName=self.FONT_REGULAR, fontSize=styles['td'].fontSize)),
+                Paragraph(ensure_upper_safe(first_eq.get('numero_serie') or ''), ParagraphStyle(name='ev', fontName=self.FONT_REGULAR, fontSize=styles['td'].fontSize))],
             ]
             equip_table = Table(equip_data, colWidths=equip_cols, rowHeights=[0.28*inch, 0.2*inch])
             equip_table.setStyle(TableStyle([
@@ -197,8 +197,36 @@ class PDFService:
 
             # Activities table
             if atividades_list:
-                proportions = [0.12, 0.12, 0.14, 0.34, 0.06, 0.11, 0.11]
+                # valores iniciais (mesma base que antes)
+                proportions = [0.09, 0.12, 0.24, 0.45, 0.05, 0.04, 0.04]
+
+
+                # calcula um delta proporcional à largura ocupada pelo "quadrado" (para simular a expansão
+                # das colunas do header até a linha vermelha). Isso reduz DESCRIÇÃO e distribui para técnicos.
+                try:
+                    delta_prop = min(0.16, (square_side / usable_w) * 1.0)  # teto 0.16 (16%)
+                except Exception:
+                    delta_prop = 0.0
+
+                idx_desc = 3
+                idx_tec1 = 5
+                idx_tec2 = 6
+
+                # aplica redução à descrição (mantendo um mínimo)
+                proportions[idx_desc] = max(0.08, proportions[idx_desc] - delta_prop)
+                # redistribui metade do delta para cada coluna de técnico
+                proportions[idx_tec1] = proportions[idx_tec1] + (delta_prop / 2.0)
+                proportions[idx_tec2] = proportions[idx_tec2] + (delta_prop / 2.0)
+
+                # garante soma = 1.0 (normaliza se necessário)
+                total_prop = sum(proportions)
+                if total_prop <= 0:
+                    proportions = [0.12, 0.12, 0.14, 0.30, 0.06, 0.13, 0.13]
+                else:
+                    proportions = [p / total_prop for p in proportions]
+
                 col_widths = [p * usable_w for p in proportions]
+
 
                 delta_desc_pts = 20.0
                 delta_tec_pts = 10.0
@@ -252,17 +280,45 @@ class PDFService:
 
                     data_br = format_date_br(at.get('DATA') or '')
 
-                    safe_desc = ensure_upper_safe(at.get('DESCRICAO') or '')
+                    tipo = str(at.get('TIPO') or '').strip()
+                    origem = ensure_upper_safe(at.get('ORIGEM') or '')
+                    destino = ensure_upper_safe(at.get('DESTINO') or '')
+                    motivo = ensure_upper_safe(at.get('MOTIVO') or '')
+                    descricao_final = ensure_upper_safe(at.get('DESCRICAO') or '')
+                    km_final = str(at.get('KM') or '')
 
+                    # Regras por tipo
+                    if tipo.lower() == "viagem terrestre":
+                        descricao_final = f"{origem} x {destino}" if origem or destino else ""
+                        # KM normal (não mexe)
+
+                    elif tipo.lower() == "viagem aérea":
+                        descricao_final = f"{origem} x {destino}" if origem or destino else ""
+                        km_final = ""  # bloqueado
+
+                    elif tipo.lower() == "translado":
+                        descricao_final = f"{origem} x {destino}" if origem or destino else ""
+                        km_final = ""  # bloqueado
+
+                    elif tipo.lower() == "período de espera":
+                        descricao_final = motivo
+                        km_final = ""  # bloqueado
+
+                    elif tipo.lower() == "mão-de-obra-técnica":
+                        descricao_final = "Mão-de-Obra-Técnica"
+                        km_final = ""  # bloqueado
+
+                    # Monta a linha
                     data.append([
                         Paragraph(str(data_br or ''), styles['td']),
                         Paragraph(hora_comb, styles['td']),
-                        Paragraph(str(at.get('TIPO') or ''), styles['td']),
-                        Paragraph(safe_desc, styles['td']),
-                        Paragraph(str(at.get('KM') or ''), styles['td']),
+                        Paragraph(tipo, styles['td']),
+                        Paragraph(descricao_final, styles['td']),
+                        Paragraph(km_final, styles['td']),
                         Paragraph(str(at.get('TECNICO1') or ''), styles['td_left']),
                         Paragraph(str(at.get('TECNICO2') or ''), styles['td_left']),
                     ])
+
 
                 activities_table = Table(data, colWidths=col_widths, repeatRows=1)
                 activities_table.setStyle(TableStyle([
@@ -424,14 +480,24 @@ class PDFService:
         frame_height = max(1.0 * inch, frame_top - frame_bottom)
 
         doc = BaseDocTemplate(pdf_buffer, pagesize=PAGE_SIZE,
-                              leftMargin=MARG, rightMargin=MARG,
-                              topMargin=chosen_top_margin, bottomMargin=chosen_bottom_margin)
+                            leftMargin=MARG, rightMargin=MARG,
+                            topMargin=chosen_top_margin, bottomMargin=chosen_bottom_margin)
 
         content_frame = Frame(MARG, frame_bottom, usable_w, frame_height,
-                              leftPadding=6, rightPadding=6, topPadding=6, bottomPadding=6, id='content_frame')
+                            leftPadding=6, rightPadding=6, topPadding=6, bottomPadding=6, id='content_frame')
 
-        # Prepare drawing functions that capture chosen_top_margin etc.
-        lp = self.config.LOGO_PATH
+        # tentativa segura de resolver o caminho da logo:
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        default_logo = os.path.normpath(os.path.join(BASE_DIR, '..', 'static', 'images', 'logo.png'))
+        lp = getattr(self.config, 'LOGO_PATH', None) or default_logo
+        # se o caminho em config for relativo, faz relativo a BASE_DIR
+        if lp and not os.path.isabs(lp):
+            lp = os.path.normpath(os.path.join(BASE_DIR, lp))
+        # se for bytes -> string
+        if isinstance(lp, bytes):
+            lp = lp.decode('utf-8')
+        lp = os.path.normpath(lp) if lp else lp
+
 
         def draw_header(canvas, doc_local):
             canvas.saveState()
@@ -444,49 +510,64 @@ class PDFService:
             top_y = PAGE_H - doc_local.topMargin
             bottom_y = top_y - header_height_base
 
-            sep_x1 = left_x + square_side
-            sep_x2 = left_x + square_side + (usable_w - 2 * square_side if usable_w > 2 * square_side else usable_w - square_side)
+            # Quadrado da logo à esquerda
+            logo_x0 = left_x
+            logo_x1 = left_x + square_side
 
-            canvas.setFillColor(self.GRAY)
-            canvas.rect(sep_x1, top_y - header_row0, (sep_x2 - sep_x1), header_row0, stroke=0, fill=1)
-            canvas.setFillColor(colors.black)
+            # Bloco central
+            sep_x1 = logo_x1
+            sep_x2 = right_x
 
+            # Borda externa do header
             eps = 0.4
             canvas.line(left_x - eps, top_y + eps, right_x + eps, top_y + eps)
             canvas.line(left_x - eps, bottom_y - eps, right_x + eps, bottom_y - eps)
             canvas.line(left_x - eps, bottom_y - eps, left_x - eps, top_y + eps)
             canvas.line(right_x + eps, bottom_y - eps, right_x + eps, top_y + eps)
 
-            canvas.line(sep_x1, bottom_y - eps, sep_x1, top_y + eps)
-            canvas.line(sep_x2, bottom_y - eps, sep_x2, top_y + eps)
+            # Borda do quadrado da logo
+            try:
+                canvas.rect(logo_x0, bottom_y, square_side, header_height_base, stroke=1, fill=0)
+            except Exception:
+                pass
 
+            # Linhas internas horizontais do header (fora do quadrado da logo)
             y_top = top_y
             y_row0 = y_top - header_row0
             y_row1 = y_row0 - header_row
             y_row2 = y_row1 - header_row
             y_row3 = y_row2 - header_row
 
-            canvas.line(sep_x1, y_row0, sep_x2, y_row0)
-            canvas.line(sep_x1, y_row1, sep_x2, y_row1)
-            canvas.line(sep_x1, y_row2, sep_x2, y_row2)
-            canvas.line(sep_x1, y_row3, sep_x2, y_row3)
+            # linhas horizontais iniciam em logo_x1 (não atravessam o quadrado da logo)
+            canvas.line(logo_x1, y_row0, right_x, y_row0)
+            canvas.line(logo_x1, y_row1, right_x, y_row1)
+            canvas.line(logo_x1, y_row2, right_x, y_row2)
+            canvas.line(logo_x1, y_row3, right_x, y_row3)
 
-            inner_label_w = 0.7 * inch
-            inner_val_w_left = 1.6 * inch * 1.25
-            inner_label_w2 = 0.6 * inch
+            # --- Colunas do bloco central:
+            # AUMENTO nas larguras da ESQUERDA (NAVIO/CONTATO/LOCAL).
+            # Ajuste apenas o fator abaixo para alterar a proporção.
+            left_increase = 1.30  # aumentado para 30% a mais (ajuste direto aqui se quiser outro valor)
+
+            inner_label_w = 0.8 * inch * left_increase      # label esquerda aumentada
+            inner_val_w_left = 2.2 * inch * left_increase   # valor esquerda aumentado
+            inner_label_w2 = 0.5 * inch                     # label pequena antes do último campo (mantida)
+
             total_center = sep_x2 - sep_x1
+            inner_val_w_right = total_center - (inner_label_w + inner_val_w_left + inner_label_w2)
 
-            delta_pts = 75.0
-            delta_inch = (delta_pts / 72.0) * inch
-            inner_val_w_left = inner_val_w_left + delta_inch
-
-            right_available = total_center - (inner_label_w + inner_val_w_left + inner_label_w2)
-            min_right = 0.6 * inch
-            if right_available < min_right:
-                shortage = min_right - right_available
-                inner_val_w_left = max(0.9 * inch, inner_val_w_left - shortage)
-                right_available = min_right
-            inner_val_w_right = right_available
+            # Se por acaso o direito ficar muito pequeno, limitar para evitar layout quebrado
+            min_right = 0.75 * inch
+            if inner_val_w_right < min_right:
+                # reduzimos o aumento da esquerda proporcionalmente para garantir mínimo
+                deficit = min_right - inner_val_w_right
+                # reduzir proporcionalmente das colunas da esquerda (label e valor)
+                # aqui reduzimos um pouco menos agressivamente para manter a diferença esquerda-direita
+                reduce_each = deficit / 2.0
+                inner_val_w_left = max(0.5 * inch, inner_val_w_left - reduce_each)
+                inner_label_w = max(0.4 * inch, inner_label_w - reduce_each)
+                inner_val_w_right = total_center - (inner_label_w + inner_val_w_left + inner_label_w2)
+                inner_val_w_right = max(inner_val_w_right, min_right)
 
             col0_w, col1_w, col2_w, col3_w = inner_label_w, inner_val_w_left, inner_label_w2, inner_val_w_right
             col_x0 = sep_x1
@@ -495,13 +576,49 @@ class PDFService:
             col_x3 = col_x2 + col2_w
             col_x4 = col_x3 + col3_w
 
-            canvas.line(col_x1, y_row3, col_x1, y_row0)
-            canvas.line(col_x2, y_row3, col_x2, y_row0)
-            canvas.line(col_x3, y_row3, col_x3, y_row0)
+            # Linhas verticais
+            # desloca somente a linha que estava em col_x2 alguns pontos para a direita,
+            # para ficar entre "CLIENTE:" e o campo de resposta, sem mover labels/valores.
+            offset_left_line = 2.0  # ajuste fino: quantos pontos deslocar para a esqurda
+            offset_right_line = 4.0  # ajuste fino: quantos pontos deslocar para a direita
+            canvas.line(col_x1, bottom_y, col_x1, top_y)
+            canvas.line(col_x2 + offset_left_line, bottom_y, col_x2 + offset_left_line, top_y)
+            canvas.line(col_x3 + offset_right_line, bottom_y, col_x3 + offset_right_line, top_y)
 
-            canvas.setFont(self.FONT_BOLD, self.BASE_TITLE_FONT_SIZE * best_found['scale'])
-            canvas.drawCentredString((sep_x1 + sep_x2) / 2.0, y_top - header_row0 / 2.0 - 3, "RELATÓRIO DE SERVIÇO")
+            # Linha horizontal inferior do relatório (borda externa)
+            canvas.line(left_x, bottom_y, right_x, bottom_y)
 
+            # --- PRONAV LINE (linha de contato central) ---
+            try:
+                contact_line = "PRONAV MARINE  |  Tel.: (22) 2141-2458  |  Cel.: (22) 99221-1893  |  service@pronav.com.br  |  www.pronav.com.br"
+                contact_font_size = max(6, int(6 * best_found['scale']) + 2)
+                contact_y = top_y + (0.05 * inch)
+                canvas.setFont(self.FONT_REGULAR, contact_font_size)
+                canvas.setFillColor(colors.HexColor('#333333'))
+                canvas.drawCentredString(PAGE_W / 2.0, contact_y, contact_line)
+                canvas.setFillColor(colors.black)
+            except Exception:
+                pass
+
+            # Fundo cinza do título e título centralizado
+            try:
+                canvas.setFillColor(self.GRAY)
+                canvas.rect(sep_x1, y_row0, (sep_x2 - sep_x1), header_row0, stroke=0, fill=1)
+                canvas.setFillColor(colors.black)
+            except Exception:
+                pass
+
+            # TÍTULO — pequeno aumento
+            title_font_size = max(9, int(self.BASE_TITLE_FONT_SIZE * best_found['scale']) + 1)
+            canvas.setFont(self.FONT_BOLD, title_font_size)
+            canvas.drawCentredString((sep_x1 + sep_x2) / 2.0, y_row0 + (header_row0 / 2.0) - 3, "RELATÓRIO DE SERVIÇO")
+
+            # Linha horizontal logo-safe: inicia em sep_x1 (lado direito do quadrado da logo)
+            canvas.setStrokeColor(colors.black)
+            canvas.setLineWidth(self.LINE_WIDTH)
+            canvas.line(sep_x1, y_row0, right_x, y_row0)
+
+            # --- Logo dentro do quadrado ---
             try:
                 if lp and os.path.exists(lp):
                     img_reader = ImageReader(lp)
@@ -514,70 +631,74 @@ class PDFService:
                     ratio = min(1.0, ratio_w, ratio_h)
                     logo_w = iw * ratio
                     logo_h = ih * ratio
-                    logo_w = logo_w + 3.0
-                    logo_h = max(1.0, logo_h - 3.0)
                     if logo_w > max_w:
                         factor = max_w / logo_w
-                        logo_w = logo_w * factor
-                        logo_h = logo_h * factor
-                    if logo_h > max_h:
-                        factor = max_h / logo_h
-                        logo_w = logo_w * factor
-                        logo_h = logo_h * factor
-                    logo_x = left_x + (square_side - logo_w) / 2.0
+                        logo_w *= factor
+                        logo_h *= factor
+                    logo_x = logo_x0 + (square_side - logo_w) / 2.0
                     logo_y = bottom_y + (header_height_base - logo_h) / 2.0
                     canvas.drawImage(img_reader, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
             except Exception:
                 pass
 
-            contact_x_center = sep_x2 + (square_side / 2.0)
-            title_text = "PRONAV MARINE"
-            title_font_size = max(7, int(9 * best_found['scale']))
-            detail_font_size = max(5, int(6 * best_found['scale']))
-            detail_lines = ["Tel.: (22) 2141-2458", "Cel.: (22) 99221-1893", "service@pronav.com.br", "www.pronav.com.br"]
-            detail_leading = detail_font_size * 1.2
-            total_height = title_font_size + 4 + (len(detail_lines) * detail_leading)
-            square_top = top_y
-            square_bottom = bottom_y
-            mid_y = (square_top + square_bottom) / 2.0
-            y = mid_y + total_height / 2.0
-
-            canvas.setFont(self.FONT_BOLD, title_font_size)
-            canvas.setFillColor(colors.HexColor('#005BD0'))
-            canvas.drawCentredString(contact_x_center, y - (title_font_size * 0.3), title_text)
-
-            canvas.setFillColor(colors.black)
-            canvas.setFont(self.FONT_REGULAR, detail_font_size)
-            y = y - (title_font_size * 0.7) - 4
-            for i, ln in enumerate(detail_lines):
-                canvas.drawCentredString(contact_x_center, y - i * detail_leading, ln)
-
+            # --- Rótulos e valores ---
             labels_left = ["NAVIO:", "CONTATO:", "LOCAL:"]
             values_left = [
-                ensure_upper_safe(report_request.NAVIO or ''),
-                ensure_upper_safe(report_request.CONTATO or ''),
-                ' - '.join(filter(None, [ensure_upper_safe(report_request.LOCAL or ''), ensure_upper_safe(report_request.CIDADE or ''), ensure_upper_safe(report_request.ESTADO or '')]))
+                ensure_upper_safe(getattr(report_request, 'NAVIO', '') or ''),
+                ensure_upper_safe(getattr(report_request, 'CONTATO', '') or ''),
+                ' - '.join(filter(None, [
+                    ensure_upper_safe(getattr(report_request, 'LOCAL', '') or ''),
+                    ensure_upper_safe(getattr(report_request, 'CIDADE', '') or ''),
+                    ensure_upper_safe(getattr(report_request, 'ESTADO', '') or '')
+                ]))
             ]
-            labels_right = ["CLIENTE:", "OBRA:", "OS:"]
-            values_right = [ensure_upper_safe(report_request.CLIENTE or ''), ensure_upper_safe(report_request.OBRA or ''), ensure_upper_safe(report_request.OS or '')]
+            labels_right = ["CLIENTE", "OBRA:", "OS:"]
+            values_right = [
+                ensure_upper_safe(getattr(report_request, 'CLIENTE', '') or ''),
+                ensure_upper_safe(getattr(report_request, 'OBRA', '') or ''),
+                ensure_upper_safe(getattr(report_request, 'OS', '') or '')
+            ]
 
             rows_y = [y_row0, y_row1, y_row2, y_row3]
+
+            # --- PADINGS: ajustados para dar mais espaço visual aos campos da esquerda
+            left_label_padding = 4
+            left_value_padding = 4
+            right_label_padding = 4   # reduzido para comprimir o lado direito
+            right_value_padding = 6   # reduzido para comprimir o lado direito
+
+            # largura máxima disponível para os valores do lado direito (para truncamento)
+            max_width = col_x4 - col_x3 - right_value_padding
+
             for i in range(3):
                 top = rows_y[i]
                 bottom = rows_y[i + 1]
-                center_y = (top + bottom) / 2.0 - 4
+                center_y = (top + bottom) / 2.0 - 3
+
+                # Colunas esquerda (NAVIO, CONTATO, LOCAL) — larguras aumentadas conforme left_increase
                 canvas.setFont(self.FONT_BOLD, max(6, int(self.BASE_LABEL_FONT_SIZE * best_found['scale'])))
                 canvas.setFillColor(colors.black)
-                canvas.drawString(col_x0 + 4, center_y, labels_left[i])
+                canvas.drawString(col_x0 + left_label_padding, center_y, labels_left[i])
                 val_font = max(6, int(self.BASE_VALUE_FONT_SIZE * best_found['scale']))
                 if labels_left[i].startswith("LOCAL"):
                     val_font = max(5, val_font - 1)
                 canvas.setFont(self.FONT_REGULAR, val_font)
-                canvas.drawString(col_x1 + 4, center_y, values_left[i])
+                canvas.drawString(col_x1 + left_value_padding, center_y, values_left[i])
+
+                # Colunas direita (CLIENTE, OBRA, OS) — largura proporcionalmente menor, padding ajustado
                 canvas.setFont(self.FONT_BOLD, max(6, int(self.BASE_LABEL_FONT_SIZE * best_found['scale'])))
-                canvas.drawString(col_x2 + 4, center_y, labels_right[i])
+                canvas.drawString(col_x2 + right_label_padding, center_y, labels_right[i])
                 canvas.setFont(self.FONT_REGULAR, val_font)
-                canvas.drawString(col_x3 + 4, center_y, values_right[i])
+
+                # Truncamento com reticências quando necessário
+                value_text = values_right[i] or ''
+                if canvas.stringWidth(value_text, self.FONT_REGULAR, val_font) > max_width:
+                    while value_text and canvas.stringWidth(value_text + '…', self.FONT_REGULAR, val_font) > max_width:
+                        value_text = value_text[:-1]
+                    value_text = (value_text + '…') if value_text else ''
+
+                value_x = col_x3 + right_value_padding
+                canvas.drawString(value_x, center_y, value_text)
 
             canvas.restoreState()
 
@@ -619,19 +740,23 @@ class PDFService:
             canvas.line(mid, sig_bottom - eps, mid, sig_bottom + sig_total_h_local + eps)
 
             canvas.restoreState()
-
+            
         def on_page_template(canvas, doc_local):
             draw_header(canvas, doc_local)
             draw_signatures_and_footer(canvas, doc_local)
             try:
                 canvas.saveState()
-                canvas.setFont(self.FONT_REGULAR, max(6, int(7 * best_found['scale'])))
+                # fonte menor
+                canvas.setFont(self.FONT_REGULAR, max(5, int(6 * best_found['scale'])))
                 canvas.setFillColor(colors.HexColor('#666666'))
-                y_page = frame_bottom + (0.06 * inch)
+                # posiciona logo abaixo das assinaturas
+                y_page = doc_local.bottomMargin - (0.10 * inch)  
                 canvas.drawCentredString(PAGE_W / 2.0, y_page, f"PÁGINA {doc_local.page}")
                 canvas.restoreState()
             except Exception:
                 pass
+
+        
 
         page_template = PageTemplate(id='default', frames=[content_frame], onPage=on_page_template)
         doc.addPageTemplates([page_template])
@@ -641,6 +766,8 @@ class PDFService:
         pdf_buffer.seek(0)
 
         return pdf_buffer, saved_report_id
+    
+    
 
     def get_filename(self, report_request, equipments_list):
         equip_name_for_file = ''

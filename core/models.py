@@ -26,20 +26,27 @@ class Activity(BaseModel):
 
     @model_validator(mode='after')
     def check_hours_present_and_km(self):
+        # --- validação de hora ---
         if self.HORA and isinstance(self.HORA, str) and self.HORA.strip():
             pass
         elif (self.HORA_INICIO and isinstance(self.HORA_INICIO, str) and self.HORA_INICIO.strip()
-              and self.HORA_FIM and isinstance(self.HORA_FIM, str) and self.HORA_FIM.strip()):
+            and self.HORA_FIM and isinstance(self.HORA_FIM, str) and self.HORA_FIM.strip()):
             pass
         else:
             raise ValueError('Informe HORA (formato antigo) ou HORA_INICIO e HORA_FIM')
 
-        types_block_km = {"Mão-de-obra Técnica", "Período de Espera"}
+        # --- validação de KM ---
+        tipos_sem_km = {"Mão-de-obra Técnica", "Período de Espera", "Viagem Aérea", "Translado"}
         tipo_norm = (self.TIPO or '').strip()
-        if tipo_norm not in types_block_km:
+
+        if tipo_norm not in tipos_sem_km:
             if self.KM is None or (isinstance(self.KM, str) and not self.KM.strip()):
                 raise ValueError('Campo KM obrigatório para este tipo de atividade')
+        else:
+            # Se for tipo sem KM → garante que KM sempre venha vazio
+            self.KM = ""
         return self
+
 
 class ReportRequest(BaseModel):
     user_id: str

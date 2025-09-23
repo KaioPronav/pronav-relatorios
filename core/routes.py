@@ -1,10 +1,10 @@
 from flask import request, send_file, render_template, jsonify, Response
 from functools import wraps
 import requests
-from pronav.models import ReportRequest, Activity
-from pronav.normalizers import normalize_payload
-from pronav.pdf_service import PDFService
-from pronav.config import Config
+from core.models import ReportRequest, Activity
+from core.normalizers import normalize_payload
+from core.pdf_service import PDFService
+from core.config import Config
 import json
 from datetime import datetime
 
@@ -263,7 +263,17 @@ def init_routes(app, db_manager, logger):
                 db.commit()
                 saved_report_id = cur.lastrowid
 
-        pdf_buffer, saved_report_id = pdf_service.generate_pdf(report_request, atividades_list, equipments_list, saved_report_id)
+        import logging
+        logger = logging.getLogger(__name__)
+
+        res = pdf_service.generate_pdf(report_request, atividades_list, equipments_list, saved_report_id)
+        if res is None:
+            # registra e levanta um erro claro
+            logger.exception("routes: pdf_service.generate_pdf retornou None (isso não deveria ocorrer). Verifique logs do serviço PDF.")
+            raise RuntimeError("pdf_service.generate_pdf retornou None — verifique logs do servidor para traceback.")
+        # caso res seja uma tupla esperada, desempacota
+        pdf_buffer, saved_report_id = res
+
         filename = pdf_service.get_filename(report_request, equipments_list)
 
         resp = send_file(pdf_buffer, mimetype='application/pdf', as_attachment=True, download_name=filename)

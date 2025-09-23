@@ -86,6 +86,10 @@
     .field-help { font-size:0.78rem; color:#64748b; margin-top:6px; }
     .desc-prefix { font-weight:700; margin-bottom:6px; white-space:pre-wrap; color:#1f2937; }
     .desc-prefix.hidden { display:none; }
+
+    /* wrapper for the Add button placed below activities (only visual change allowed) */
+    #__add-activity-wrapper { display:flex; justify-content:flex-end; width:100%; margin-top:8px; }
+    #add-activity-btn { align-self:flex-end; z-index:1000; }
   </style>
 </head>
 <body class="flex flex-col min-h-screen">
@@ -210,11 +214,17 @@
           <div>
             <div class="flex items-center justify-between gap-2 flex-wrap mb-2">
               <h3 class="section-title">Atividades</h3>
+            </div>
+
+            <!-- activities container stays here -->
+            <div id="activities-container" class="space-y-4"></div>
+
+            <!-- ADD BUTTON moved to start BELOW the activities container (initial position at bottom) -->
+            <div id="__add-activity-wrapper">
               <button type="button" id="add-activity-btn" class="btn-primary rounded-full px-3 py-1 text-sm">
                 <i class="fas fa-plus mr-2"></i> Adicionar
               </button>
             </div>
-            <div id="activities-container" class="space-y-4"></div>
           </div>
 
           <div class="form-actions">
@@ -353,9 +363,10 @@
       return div;
     }
 
-    function addActivity(isInitial=false, data=null) {
+    function addActivity(isInitial = false, data = null) {
       const count = activitiesContainer.querySelectorAll('.activity-item').length;
       if (count >= 30 && !isInitial) { showModal(errorModal, 'Máximo de 30 atividades permitidas.'); return; }
+
       const div = document.createElement('div');
       div.className = 'activity-item grid';
       div.innerHTML = `
@@ -427,8 +438,11 @@
       `;
 
       activitiesContainer.appendChild(div);
+
+      // remoção
       div.querySelector('.remove-activity-btn').addEventListener('click', () => { div.remove(); updateSubmitButtonState(); });
 
+      // elementos-chave
       const tipoEl = div.querySelector('[name="TIPO"]');
       const kmEl = div.querySelector('[name="KM"]');
       const motivoEl = div.querySelector('[name="MOTIVO"]');
@@ -436,101 +450,152 @@
       const destinoEl = div.querySelector('[name="DESTINO"]');
       const prefixEl = div.querySelector('.desc-prefix');
 
+      // regras (mesmas do seu código, mas com ligação de eventos)
       function applyTipoRules() {
         try {
           if (!tipoEl || !kmEl) return;
           const t = (tipoEl.value || '').trim();
 
-          const kmBlockedTypes = ['Mão-de-obra Técnica', 'Período de Espera'];
+          const kmBlockedTypes = ['Mão-de-obra Técnica', 'Período de Espera', 'Viagem Aérea', 'Translado'];
           const travelTypes = ['Viagem Terrestre', 'Viagem Aérea', 'Translado'];
 
+          // KM
           if (kmBlockedTypes.includes(t)) {
+            kmEl.value = '';
             kmEl.disabled = true;
-            if (typeof kmEl.removeAttribute === 'function') kmEl.removeAttribute('required');
+            kmEl.removeAttribute('required');
           } else {
             kmEl.disabled = false;
-            try { kmEl.setAttribute('required','required'); } catch(e){}
+            kmEl.setAttribute('required', 'required');
           }
 
+          // MOTIVO
           if (motivoEl) {
             if (t === 'Período de Espera') {
               motivoEl.disabled = false;
-              try { motivoEl.setAttribute('required','required'); } catch(e){}
+              motivoEl.setAttribute('required', 'required');
             } else {
+              motivoEl.value = '';
               motivoEl.disabled = true;
-              if (typeof motivoEl.removeAttribute === 'function') motivoEl.removeAttribute('required');
+              motivoEl.removeAttribute('required');
             }
           }
 
+          // ORIGEM/DESTINO
           if (origemEl && destinoEl) {
             if (travelTypes.includes(t)) {
               origemEl.disabled = false;
               destinoEl.disabled = false;
-              try { origemEl.setAttribute('required','required'); } catch(e){}
-              try { destinoEl.setAttribute('required','required'); } catch(e){}
+              origemEl.setAttribute('required', 'required');
+              destinoEl.setAttribute('required', 'required');
             } else {
+              origemEl.value = '';
+              destinoEl.value = '';
               origemEl.disabled = true;
               destinoEl.disabled = true;
-              if (typeof origemEl.removeAttribute === 'function') origemEl.removeAttribute('required');
-              if (typeof destinoEl.removeAttribute === 'function') destinoEl.removeAttribute('required');
+              origemEl.removeAttribute('required');
+              destinoEl.removeAttribute('required');
             }
           }
 
-          const prefixes = [];
-          if (t === 'Mão-de-obra Técnica') prefixes.push('Mão-de-obra Técnica');
-          if (t === 'Período de Espera' && motivoEl && motivoEl.value && motivoEl.value.trim()) prefixes.push('MOTIVO: ' + motivoEl.value.trim());
-          if (travelTypes.includes(t) && origemEl && destinoEl) {
+          // prefixo de descrição
+          let descVal = '';
+          if (t === 'Mão-de-obra Técnica') {
+            descVal = 'Mão-de-Obra-Técnica';
+          } else if (t === 'Período de Espera' && motivoEl && motivoEl.value.trim()) {
+            descVal = motivoEl.value.trim();
+          } else if (travelTypes.includes(t) && origemEl && destinoEl) {
             const o = (origemEl.value || '').trim();
             const d = (destinoEl.value || '').trim();
-            if (o || d) prefixes.push(`${o} x ${d}`);
+            if (o || d) descVal = `${o} x ${d}`;
           }
 
-          if (prefixes.length > 0) {
-            prefixEl.textContent = prefixes.join('\n');
+          if (descVal) {
+            prefixEl.textContent = descVal;
             prefixEl.classList.remove('hidden');
           } else {
             prefixEl.textContent = '';
             prefixEl.classList.add('hidden');
           }
+
         } catch (err) {
           console.error('applyTipoRules error (handled):', err);
         }
       }
 
+      // ligar eventos para manter a UI reativa
       if (tipoEl) tipoEl.addEventListener('change', applyTipoRules);
-      [motivoEl, origemEl, destinoEl].forEach(inp => { if (inp) inp.addEventListener('input', applyTipoRules); });
+      if (motivoEl) motivoEl.addEventListener('input', applyTipoRules);
+      if (origemEl) origemEl.addEventListener('input', applyTipoRules);
+      if (destinoEl) destinoEl.addEventListener('input', applyTipoRules);
 
-      if (data) {
-        if (data.DATA) div.querySelector('[name="DATA"]').value = data.DATA || '';
-        div.querySelector('[name="HORA_INICIO"]').value = data.HORA_INICIO || data.HORA || '';
-        div.querySelector('[name="HORA_FIM"]').value = data.HORA_FIM || '';
-        if (data.TIPO) div.querySelector('[name="TIPO"]').value = data.TIPO || 'Servico';
-        if (data.KM) div.querySelector('[name="KM"]').value = data.KM || '';
-        if (data.MOTIVO) div.querySelector('[name="MOTIVO"]').value = data.MOTIVO || '';
-        if (data.ORIGEM) div.querySelector('[name="ORIGEM"]').value = data.ORIGEM || '';
-        if (data.DESTINO) div.querySelector('[name="DESTINO"]').value = data.DESTINO || '';
-        div.querySelector('[name="TECNICO1"]').value = data.TECNICO1 || '';
-        div.querySelector('[name="TECNICO2"]').value = data.TECNICO2 || '';
+      // Garantia 1: KM só aceita números, vírgula ou ponto (limpa qualquer letra / ' x ' instantaneamente)
+      if (kmEl) {
+        kmEl.addEventListener('input', () => {
+          // remove tudo que não seja 0-9, vírgula ou ponto
+          const cleaned = kmEl.value.replace(/[^0-9.,]/g, '');
+          if (cleaned !== kmEl.value) kmEl.value = cleaned;
+        });
+
+        // Se por algum motivo Origem/Destino tentarem escrever em KM (ex.: autofill / JS bug),
+        // mantemos KM apenas como número: ao mudar origem/destino, limpamos qualquer texto
+        const ensureKmNumeric = () => {
+          if (!kmEl) return;
+          if (/[A-Za-z×x]/.test(kmEl.value)) {
+            // remove letras e símbolos de texto
+            kmEl.value = kmEl.value.replace(/[^0-9.,]/g, '');
+          }
+        };
+        if (origemEl) origemEl.addEventListener('input', ensureKmNumeric);
+        if (destinoEl) destinoEl.addEventListener('input', ensureKmNumeric);
       }
 
-      try { applyTipoRules(); } catch(e){ console.error('applyTipoRules init', e); }
 
+      // se vier dados (carregar rascunho/edição), preenche os campos
+      if (data && typeof data === 'object') {
+        try {
+          if (data.DATA) div.querySelector('[name="DATA"]').value = data.DATA;
+          if (data.HORA_INICIO) div.querySelector('[name="HORA_INICIO"]').value = data.HORA_INICIO;
+          if (data.HORA_FIM) div.querySelector('[name="HORA_FIM"]').value = data.HORA_FIM;
+          if (data.TIPO) tipoEl.value = data.TIPO;
+          if (data.KM) kmEl.value = data.KM;
+          if (data.MOTIVO) motivoEl.value = data.MOTIVO;
+          if (data.ORIGEM) origemEl.value = data.ORIGEM;
+          if (data.DESTINO) destinoEl.value = data.DESTINO;
+          if (data.TECNICO1) div.querySelector('[name="TECNICO1"]').value = data.TECNICO1;
+          if (data.TECNICO2) div.querySelector('[name="TECNICO2"]').value = data.TECNICO2;
+        } catch(e) { console.warn('Erro ao popular atividade:', e); }
+      }
+
+      // aplicar regras logo após inserir
+      applyTipoRules();
       updateSubmitButtonState();
+
+      return div;
     }
+
 
     function validateForm() {
       const required = reportForm.querySelectorAll('[required]');
       let ok = true;
       required.forEach(f => {
         if (f.disabled) return;
-        if (!f.value || f.value.toString().trim() === '') { f.classList.add('error'); ok = false; } else f.classList.remove('error');
+        if (!f.value || f.value.toString().trim() === '') {
+          f.classList.add('error');
+          ok = false;
+        } else {
+          f.classList.remove('error');
+        }
       });
-      if (activitiesContainer.children.length === 0) { showModal(errorModal, 'Adicione pelo menos uma atividade.'); ok = false; }
+      if (activitiesContainer.children.length === 0) {
+        showModal(errorModal, 'Adicione pelo menos uma atividade.');
+        ok = false;
+      }
       const activities = activitiesContainer.querySelectorAll('.activity-item');
       activities.forEach(item => {
         const h1 = item.querySelector('[name="HORA_INICIO"]');
         const h2 = item.querySelector('[name="HORA_FIM"]');
-        if ((!h1.value || !h2.value) && !item.querySelector('[name="HORA"]')) {
+        if (!h1.value || !h2.value) {
           if (h1) h1.classList.add('error');
           if (h2) h2.classList.add('error');
           ok = false;
@@ -538,6 +603,7 @@
       });
       return ok;
     }
+
 
     function buildPayload() {
       const fd = new FormData(reportForm);
@@ -565,6 +631,7 @@
         EQUIPAMENTOS: []
       };
 
+      // Primeiro equipamento (campos principais)
       const firstEquip = {
         equipamento: payload.EQUIPAMENTO || '',
         fabricante: payload.FABRICANTE || '',
@@ -574,52 +641,86 @@
       if (firstEquip.equipamento || firstEquip.fabricante || firstEquip.modelo || firstEquip.numero_serie) {
         payload.EQUIPAMENTOS.push(firstEquip);
       }
+
+      // Equipamentos adicionais
       const equipItems = equipmentsContainer.querySelectorAll('.equip-item');
       equipItems.forEach(el => {
-        const equip = el.querySelector('[data-key="equip"]').value || '';
-        const fab = el.querySelector('[data-key="fabricante"]').value || '';
-        const mod = el.querySelector('[data-key="modelo"]').value || '';
-        const sn = el.querySelector('[data-key="sn"]').value || '';
+        const equip = (el.querySelector('[data-key="equip"]') && el.querySelector('[data-key="equip"]').value) || '';
+        const fab = (el.querySelector('[data-key="fabricante"]') && el.querySelector('[data-key="fabricante"]').value) || '';
+        const mod = (el.querySelector('[data-key="modelo"]') && el.querySelector('[data-key="modelo"]').value) || '';
+        const sn = (el.querySelector('[data-key="sn"]') && el.querySelector('[data-key="sn"]').value) || '';
         if (equip || fab || mod || sn) {
           payload.EQUIPAMENTOS.push({ equipamento: equip, fabricante: fab, modelo: mod, numero_serie: sn });
         }
       });
 
+      // Tipos auxiliares
+      const travelTypes = ['Viagem Terrestre', 'Viagem Aérea', 'Translado'];
+      const kmBlockedTypes = ['Mão-de-obra Técnica', 'Período de Espera', 'Viagem Aérea', 'Translado'];
+
+      // Atividades
       const items = activitiesContainer.querySelectorAll('.activity-item');
       items.forEach(it => {
-        const tipoVal = (it.querySelector('[name="TIPO"]').value || '').trim();
-        const travelTypes = ['Viagem Terrestre', 'Viagem Aérea', 'Translado'];
-        const prefixes = [];
-        if (tipoVal === 'Mão-de-obra Técnica') prefixes.push('Mão-de-obra Técnica');
+        const tipoVal = ((it.querySelector('[name="TIPO"]') && it.querySelector('[name="TIPO"]').value) || '').trim();
+
+        // Campos fonte
+        const dataVal = (it.querySelector('[name="DATA"]') && it.querySelector('[name="DATA"]').value) || '';
+        const hiVal = (it.querySelector('[name="HORA_INICIO"]') && it.querySelector('[name="HORA_INICIO"]').value) || '';
+        const hfVal = (it.querySelector('[name="HORA_FIM"]') && it.querySelector('[name="HORA_FIM"]').value) || '';
+        const tecnico1Val = (it.querySelector('[name="TECNICO1"]') && it.querySelector('[name="TECNICO1"]').value) || '';
+        const tecnico2Val = (it.querySelector('[name="TECNICO2"]') && it.querySelector('[name="TECNICO2"]').value) || '';
+
         const motivoField = it.querySelector('[name="MOTIVO"]');
-        if (tipoVal === 'Período de Espera' && motivoField && motivoField.value && motivoField.value.trim()) prefixes.push('MOTIVO: ' + motivoField.value.trim());
         const origemField = it.querySelector('[name="ORIGEM"]');
         const destinoField = it.querySelector('[name="DESTINO"]');
-        if (travelTypes.includes(tipoVal) && (origemField || destinoField)) {
-          const o = origemField ? origemField.value.trim() : '';
-          const d = destinoField ? destinoField.value.trim() : '';
-          if (o || d) prefixes.push(`${o} x ${d}`);
+        const kmField = it.querySelector('[name="KM"]');
+
+        // Valores textuais (trim)
+        const motivoText = (motivoField && motivoField.value) ? motivoField.value.trim() : '';
+        const origemText = (origemField && origemField.value) ? origemField.value.trim() : '';
+        const destinoText = (destinoField && destinoField.value) ? destinoField.value.trim() : '';
+
+        // --- DESCRIÇÃO (regras exatas)
+        let descVal = '';
+        if (tipoVal === 'Mão-de-obra Técnica') {
+          descVal = 'Mão-de-Obra-Técnica';
+        } else if (tipoVal === 'Período de Espera') {
+          if (motivoField && !motivoField.disabled && motivoText) descVal = motivoText;
+        } else if (travelTypes.includes(tipoVal)) {
+          if (origemText || destinoText) descVal = `${origemText} x ${destinoText}`;
         }
-        // front does not provide free-text descrição anymore; send prefix (if any) so backend can build final description
-        const prefixText = prefixes.length ? prefixes.join('\n') : '';
+
+        // --- KM (somente manual) ---
+        let kmVal = (kmField && kmField.value) ? kmField.value.trim() : '';
+        const isKmBlocked = kmBlockedTypes.includes(tipoVal);
+        if (isKmBlocked) {
+          kmVal = ''; // se o tipo bloqueia, zera sempre
+        }
+
+        const motivoPayload = (motivoField && !motivoField.disabled) ? (motivoField.value || '') : '';
+        const origemPayload = (origemField && !origemField.disabled) ? (origemField.value || '') : '';
+        const destinoPayload = (destinoField && !destinoField.disabled) ? (destinoField.value || '') : '';
 
         payload.activities.push({
-          DATA: it.querySelector('[name="DATA"]').value || '',
-          HORA_INICIO: it.querySelector('[name="HORA_INICIO"]').value || '',
-          HORA_FIM: it.querySelector('[name="HORA_FIM"]').value || '',
+          DATA: dataVal,
+          HORA_INICIO: hiVal,
+          HORA_FIM: hfVal,
           TIPO: tipoVal || '',
-          KM: it.querySelector('[name="KM"]').value || '',
-          DESCRICAO: prefixText || '',
-          TECNICO1: it.querySelector('[name="TECNICO1"]').value || '',
-          TECNICO2: it.querySelector('[name="TECNICO2"]').value || '',
-          MOTIVO: (it.querySelector('[name="MOTIVO"]') && !it.querySelector('[name="MOTIVO"]').disabled) ? it.querySelector('[name="MOTIVO"]').value || '' : '',
-          ORIGEM: (it.querySelector('[name="ORIGEM"]') && !it.querySelector('[name="ORIGEM"]').disabled) ? it.querySelector('[name="ORIGEM"]').value || '' : '',
-          DESTINO: (it.querySelector('[name="DESTINO"]') && !it.querySelector('[name="DESTINO"]').disabled) ? it.querySelector('[name="DESTINO"]').value || '' : ''
+          KM: kmVal || '',
+          KM_BLOQUEADO: isKmBlocked,
+          DESCRICAO: descVal || '',
+          TECNICO1: tecnico1Val,
+          TECNICO2: tecnico2Val,
+          MOTIVO: motivoPayload,
+          ORIGEM: origemPayload,
+          DESTINO: destinoPayload
         });
-      });
+      }); // fim do forEach de atividades
+
       if (currentDocRef && !firebaseAvailable) payload.report_id = currentDocRef;
       return payload;
     }
+
 
     async function generateReport() {
       if (!validateForm()) { showModal(errorModal, 'Preencha os campos obrigatórios.'); return; }
@@ -753,7 +854,7 @@
           'OBRA': (d.work || d.OBRA || '').toString().toUpperCase(),
           'LOCAL': (d.location || d.LOCAL || '').toString().toUpperCase(),
           'OS': (d.os_number || d.OS || '').toString().toUpperCase(),
-          'EQUIPAMENTO': d.equipment || d.EQUIPAMENTO || '',
+          'EQUIPAMENTO': d.equipment || d.EQUIPAMENTО || '',
           'FABRICANTE': d.manufacturer || d.FABRICANTE || '',
           'MODELO': d.model || d.MODELO || '',
           'NUMERO_SERIE': d.serial_number || d.NUMERO_SERIE || '',
@@ -797,7 +898,6 @@
 
       } catch (e) { console.error(e); showModal(errorModal, 'Erro ao carregar relatório: ' + (e.message || e)); }
     }
-
 
     async function deleteReportBackend(id) {
       showModal(confirmModal, 'Deseja realmente deletar este relatório?');

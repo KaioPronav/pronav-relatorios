@@ -1,7 +1,7 @@
 from flask import Flask
-from pronav.config import Config
-from pronav.database import DatabaseManager
-from pronav.routes import init_routes
+from core.config import Config
+from core.database import DatabaseManager
+from core.routes import init_routes
 import logging
 from logging.handlers import RotatingFileHandler
 import os
