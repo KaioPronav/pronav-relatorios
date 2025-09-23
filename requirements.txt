@@ -1,0 +1,10 @@
+Flask
+python-dotenv
+requests
+pydantic
+reportlab
+python-dateutil
+Pillow
+gunicorn
+waitress
+typing_extensions

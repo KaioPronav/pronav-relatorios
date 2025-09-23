@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Portal de Relatórios Pronav — v2</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+  <style>
+    :root{
+      --pronav-blue:#035acd;
+      --pronav-dark-blue:#023d8c;
+      --pronav-light-blue:#468cf5;
+      --pronav-gray:#E0E7E9;
+      --pronav-light-gray:#F8FAFC;
+      --pronav-text:#334155;
+      --pronav-border:#E2E8F0;
+      --pronav-success:#10B981;
+      --pronav-red:#EF4444;
+      --pronav-saved:#3B82F6;
+      --pronav-card-bg:#fff;
+      --pronav-shadow:rgba(0,0,0,0.06);
+    }
+    *,*::before,*::after{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:'Inter',sans-serif;background:linear-gradient(135deg,#f1f5f9 0%,#e2e8f0 100%);color:var(--pronav-text);min-height:100vh;display:flex;flex-direction:column}
+
+    .header{background:linear-gradient(120deg,var(--pronav-blue),var(--pronav-dark-blue));padding:0.75rem 1rem;box-shadow:0 4px 6px -1px var(--pronav-shadow)}
+    .main-container{flex:1;background-color:transparent;padding:1rem;overflow:auto}
+    .card{background:var(--pronav-card-bg);border-radius:0.6rem;padding:0.75rem;box-shadow:0 8px 18px -6px var(--pronav-shadow)}
+    .nav-item{cursor:pointer;padding:.35rem .6rem;border-radius:9999px;font-weight:600;font-size:0.9rem}
+    .nav-item.active{background:white;color:var(--pronav-blue)}
+
+    .btn-primary{background:linear-gradient(90deg,var(--pronav-blue),var(--pronav-light-blue));color:#fff;font-weight:600;padding:.36rem .7rem;border-radius:9999px;font-size:0.92rem;border:none}
+    .btn-secondary{background:var(--pronav-saved);color:#fff;padding:.36rem .7rem;border-radius:9999px;font-size:0.92rem;border:none}
+    .btn-delete{background:var(--pronav-red);color:#fff;padding:.36rem .7rem;border-radius:9999px;border:none}
+
+    .form-label{font-weight:700;margin-bottom:.25rem;font-size:0.9rem}
+    .form-control{border:1px solid var(--pronav-border);border-radius:.5rem;padding:.36rem .5rem;width:100%;background:var(--pronav-light-gray);min-height:36px;font-size:0.94rem}
+    .form-control:focus{outline:none;border-color:var(--pronav-blue);background:#fff;box-shadow:0 0 0 4px rgba(3,90,205,.06)}
+    .form-control.error{border-color:var(--pronav-red)}
+    .section-title{font-weight:700;color:var(--pronav-dark-blue);margin-bottom:0.5rem;font-size:1rem}
+    footer{background:var(--pronav-dark-blue);color:#fff;padding:0.6rem;text-align:center;margin-top:auto;font-size:0.85rem}
+
+    .saved-list { display:flex; flex-direction:column; gap:8px; }
+    .activity-item.compact { padding: 0.5rem; border-radius: 10px; display:flex; align-items:center; gap:10px; justify-content:space-between; background: #fff; box-shadow: 0 2px 6px rgba(2,6,23,0.04); border: 1px solid var(--pronav-border); min-height:56px; }
+    .compact .meta{flex:1;min-width:0}
+    .compact .meta p:first-child{font-weight:700;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .compact .meta p.meta-sub{margin:2px 0 0 0;font-size:0.78rem;color:#64748b;}
+    .compact .actions{display:flex;gap:8px;margin-left:8px}
+
+    .btn-icon { border-radius:8px; padding:0.4rem; cursor:pointer; border: none; display:inline-flex; align-items:center; justify-content:center; min-width:38px; height:38px; box-shadow:0 2px 6px rgba(2,6,23,0.04); }
+    .btn-icon i { font-size:14px; }
+
+    .activity-item.grid { display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 0.6rem; position: relative; padding: 0.75rem; border: 1px solid var(--pronav-border); border-radius: 0.6rem; background-color: #fff; }
+    @media (min-width: 640px) { .activity-item.grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+    @media (min-width: 1024px) { .activity-item.grid { grid-template-columns: repeat(12, minmax(0, 1fr)); gap:0.6rem; } }
+    .activity-item.grid > * { min-width: 0; }
+    .col-span-12 { grid-column: 1 / -1; }
+    @media (min-width:640px) { .md-span-2 { grid-column: span 2; } .md-span-3 { grid-column: span 3; } .md-span-4 { grid-column: span 4; } .md-span-6 { grid-column: span 6; } }
+    @media (min-width:1024px) { .c2 { grid-column: span 2; } .c3 { grid-column: span 3; } .c4 { grid-column: span 4; } .c6 { grid-column: span 6; } .c12{ grid-column: 1 / -1; } }
+
+    .time-pair { display:flex; gap:0.45rem; align-items:center; width:100%; }
+    .description-full { width:100%; min-height:72px; resize:vertical; white-space:pre-wrap; }
+
+    /* tech row: alinhar técnicos - Técnico 2 à direita (solicitado) */
+    .tech-row { display:flex; gap:0.5rem; justify-content:flex-start; align-items:flex-start; flex-wrap:wrap; margin-top:6px; }
+    .tech-box { width:100%; max-width:220px; display:flex; flex-direction:column; align-items:flex-start; }
+    .tech-box + .tech-box input { text-align: left; }
+
+    .remove-activity-btn { position:absolute; top:4px; right:10px; width:30px; height:30px; border-radius:999px; background:#ef4444; color:#fff; border:none; display:inline-flex; align-items:center; justify-content:center; font-size:0.8rem; z-index:5; }
+
+    .form-actions { display:flex; justify-content:center; gap:0.6rem; flex-wrap:wrap; margin-top:0.4rem; }
+    @media (min-width:640px) { .form-actions { justify-content:flex-end; } }
+
+    .uppercase-input { text-transform:uppercase; }
+
+    .equip-list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+    .equip-item { display:flex; gap:8px; align-items:center; }
+    .equip-item input { font-size:0.9rem; }
+    .equip-mini { min-width:0; flex:1; }
+    .equip-remove { background:#FFF1F2; color:#991B1B; border-radius:8px; padding:6px; border:none; cursor:pointer; }
+
+    .field-help { font-size:0.78rem; color:#64748b; margin-top:6px; }
+    .desc-prefix { font-weight:700; margin-bottom:6px; white-space:pre-wrap; color:#1f2937; }
+    .desc-prefix.hidden { display:none; }
+  </style>
+</head>
+<body class="flex flex-col min-h-screen">
+
+  <header class="header text-white w-full py-3 px-4 flex flex-col md:flex-row items-center justify-between sticky top-0 z-50">
+    <div class="flex items-center space-x-3 mb-3 md:mb-0">
+      <div class="w-10 h-10 rounded-lg bg-white bg-opacity-10 flex items-center justify-center">
+        <img src="https://i.ibb.co/vCxfFg0S/pronav.png" alt="Logo Pronav" class="h-8" />
+      </div>
+      <div>
+        <h1 class="text-lg font-bold">Portal de Relatórios</h1>
+        <p class="text-xs font-light opacity-80">Pronav Marine</p>
+      </div>
+    </div>
+
+    <div class="flex items-center space-x-3">
+      <button id="new-report-nav" class="nav-item active" aria-controls="new-report-view"><i class="fas fa-plus mr-2"></i>Novo Relatório</button>
+      <button id="saved-reports-nav" class="nav-item" aria-controls="saved-reports-view"><i class="fas fa-folder mr-2"></i>Relatórios Salvos</button>
+    </div>
+  </header>
+
+  <main class="main-container flex-grow p-4">
+    <div id="new-report-view" class="max-w-5xl mx-auto w-full">
+      <div class="card p-4">
+        <h2 class="section-title">Dados do Relatório</h2>
+        <form id="report-form" class="space-y-3" autocomplete="off" novalidate onsubmit="return false;">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label for="CLIENTE" class="form-label">Cliente</label>
+              <input id="CLIENTE" name="CLIENTE" required class="form-control uppercase-input" type="text" placeholder="Nome da empresa/contratante" />
+            </div>
+            <div>
+              <label for="NAVIO" class="form-label">Embarcação / Navio</label>
+              <input id="NAVIO" name="NAVIO" required class="form-control uppercase-input" type="text" placeholder="Nome ou identificação do navio" />
+            </div>
+            <div>
+              <label for="CONTATO" class="form-label">Contato</label>
+              <input id="CONTATO" name="CONTATO" required class="form-control uppercase-input" type="text" placeholder="Pessoa ou setor de contato" />
+            </div>
+            <div>
+              <label for="OBRA" class="form-label">Obra</label>
+              <input id="OBRA" name="OBRA" required class="form-control uppercase-input" type="text" placeholder="Número obra" />
+            </div>
+            <div>
+              <label for="LOCAL" class="form-label">Local</label>
+              <input id="LOCAL" name="LOCAL" required class="form-control uppercase-input" type="text" placeholder="Ex.: PORTO DO AÇU" />
+            </div>
+            <div>
+              <label for="CIDADE" class="form-label">Cidade</label>
+              <input id="CIDADE" name="CIDADE" class="form-control uppercase-input" type="text" placeholder="Ex: CAMPOS DOS GOYTACAZES" />
+            </div>
+            <div>
+              <label for="ESTADO" class="form-label">Estado</label>
+              <input id="ESTADO" name="ESTADO" class="form-control uppercase-input" type="text" placeholder="Ex: RJ" />
+            </div>
+            <div>
+              <label for="OS" class="form-label">Número da OS</label>
+              <input id="OS" name="OS" required class="form-control uppercase-input" type="text" placeholder="Número da ordem de serviço" />
+            </div>
+
+            <div>
+              <label for="EQUIPAMENTO" class="form-label">Equipamento (principal)</label>
+              <input id="EQUIPAMENTO" name="EQUIPAMENTO" required class="form-control uppercase-input" type="text" placeholder="Nome do equipamento principal" />
+            </div>
+            <div>
+              <label for="FABRICANTE" class="form-label">Fabricante</label>
+              <input id="FABRICANTE" name="FABRICANTE" required class="form-control uppercase-input" type="text" placeholder="Fabricante do equipamento" />
+            </div>
+            <div>
+              <label for="MODELO" class="form-label">Modelo</label>
+              <input id="MODELO" name="MODELO" required class="form-control uppercase-input" type="text" placeholder="Modelo do equipamento" />
+            </div>
+            <div>
+              <label for="NUMERO_SERIE" class="form-label">Nº de Série</label>
+              <input id="NUMERO_SERIE" name="NUMERO_SERIE" required class="form-control uppercase-input" type="text" placeholder="Número de série" />
+            </div>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between">
+              <h3 class="section-title">Equipamentos (adicionais)</h3>
+              <div>
+                <button type="button" id="add-equipment-btn" class="btn-secondary px-3 py-1 text-sm"><i class="fas fa-plus mr-2"></i>Adicionar equipamento</button>
+              </div>
+            </div>
+            <div id="equipments-container" class="equip-list" aria-live="polite"></div>
+          </div>
+
+          <div class="space-y-2">
+            <div>
+              <label for="PROBLEMA_RELATADO" class="form-label">Problema Relatado</label>
+              <textarea id="PROBLEMA_RELATADO" name="PROBLEMA_RELATADO" required rows="3" class="form-control" placeholder="Descreva o problema observado (use quebras de linha para itens separados)"></textarea>
+            </div>
+            <div>
+              <label for="SERVICO_REALIZADO" class="form-label">Serviço Realizado</label>
+              <textarea id="SERVICO_REALIZADO" name="SERVICO_REALIZADO" required rows="3" class="form-control" placeholder="Descreva as ações realizadas"></textarea>
+            </div>
+            <div>
+              <label for="RESULTADO" class="form-label">Resultado</label>
+              <textarea id="RESULTADO" name="RESULTADO" required rows="3" class="form-control" placeholder="Resultado/observações finais"></textarea>
+            </div>
+            <div>
+              <label for="PENDENCIAS" class="form-label">Pendências</label>
+              <textarea id="PENDENCIAS" name="PENDENCIAS" required rows="2" class="form-control" placeholder="Tarefas pendentes / follow-up"></textarea>
+            </div>
+          </div>
+
+          <div>
+            <h3 class="section-title">Materiais</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label for="MATERIAL_CLIENTE" class="form-label">Material Fornecido pelo Cliente</label>
+                <textarea id="MATERIAL_CLIENTE" name="MATERIAL_CLIENTE" required rows="2" class="form-control" placeholder="Lista de materiais do cliente (se houver)"></textarea>
+              </div>
+              <div>
+                <label for="MATERIAL_PRONAV" class="form-label">Material Fornecido pela Pronav</label>
+                <textarea id="MATERIAL_PRONAV" name="MATERIAL_PRONAV" required rows="2" class="form-control" placeholder="Lista de materiais fornecidos pela Pronav"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between gap-2 flex-wrap mb-2">
+              <h3 class="section-title">Atividades</h3>
+              <button type="button" id="add-activity-btn" class="btn-primary rounded-full px-3 py-1 text-sm">
+                <i class="fas fa-plus mr-2"></i> Adicionar
+              </button>
+            </div>
+            <div id="activities-container" class="space-y-4"></div>
+          </div>
+
+          <div class="form-actions">
+            <button type="button" id="save-btn" class="btn-secondary"><i class="fas fa-save mr-2"></i> Salvar Rascunho</button>
+            <button type="submit" id="submit-btn" class="btn-primary"><i class="fas fa-file-pdf mr-2"></i> Gerar PDF</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="saved-reports-view" class="max-w-3xl mx-auto hidden mt-4">
+      <div class="card p-3">
+        <h2 class="section-title">Relatórios Salvos</h2>
+        <div id="saved-reports-list" class="space-y-2 saved-list">
+          <p id="no-reports-message" class="text-gray-500 text-center">Nenhum relatório salvo ainda.</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="success-modal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl p-6 shadow-xl max-w-sm w-full text-center">
+        <div class="mb-3"><i class="fas fa-check-circle text-green-500 text-3xl"></i></div>
+        <h3 class="font-bold mb-1">Sucesso</h3>
+        <p id="success-text" class="text-gray-600 mb-3">Operação realizada com sucesso.</p>
+        <button id="close-modal-btn" class="btn-primary px-4 py-1 rounded-full text-white font-semibold">Fechar</button>
+      </div>
+    </div>
+
+    <div id="error-modal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl p-6 shadow-xl max-w-sm w-full text-center">
+        <div class="mb-3"><i class="fas fa-exclamation-circle text-red-500 text-3xl"></i></div>
+        <h3 class="font-bold mb-1">Erro</h3>
+        <p id="error-message" class="text-gray-600 mb-3">Ocorreu um erro.</p>
+        <button id="close-error-btn" class="btn-primary px-4 py-1 rounded-full text-white font-semibold">Fechar</button>
+      </div>
+    </div>
+
+    <div id="confirm-modal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl p-6 shadow-xl max-w-sm w-full text-center">
+        <div class="mb-3"><i class="fas fa-question-circle text-yellow-500 text-3xl"></i></div>
+        <h3 class="font-bold mb-1">Confirmação</h3>
+        <p id="confirm-message" class="text-gray-600 mb-3">Confirmação necessária.</p>
+        <div class="flex justify-center space-x-3">
+          <button id="confirm-cancel-btn" class="px-4 py-1 rounded-full bg-gray-200">Cancelar</button>
+          <button id="confirm-ok-btn" class="px-4 py-1 rounded-full btn-delete text-white">OK</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <footer class="py-3 px-4 text-center text-sm">
+    <p class="text-gray-400">&copy; 2025 Portal de Relatórios Pronav. Todos os direitos reservados.</p>
+  </footer>
+
+  <script type="module">
+    let firebaseAvailable = false;
+    let userId = 'anonymous_user';
+    let currentDocRef = null;
+
+    const reportForm = document.getElementById('report-form');
+    const activitiesContainer = document.getElementById('activities-container');
+    const addActivityBtn = document.getElementById('add-activity-btn');
+    const submitBtn = document.getElementById('submit-btn');
+    const saveBtn = document.getElementById('save-btn');
+    const newReportNav = document.getElementById('new-report-nav');
+    const savedReportsNav = document.getElementById('saved-reports-nav');
+    const savedReportsList = document.getElementById('saved-reports-list');
+    const noReportsMessage = document.getElementById('no-reports-message');
+    const successModal = document.getElementById('success-modal');
+    const errorModal = document.getElementById('error-modal');
+    const closeModalBtn = document.getElementById('close-modal-btn');
+    const closeErrorBtn = document.getElementById('close-error-btn');
+    const confirmModal = document.getElementById('confirm-modal');
+    const confirmOkBtn = document.getElementById('confirm-ok-btn');
+    const confirmCancelBtn = document.getElementById('confirm-cancel-btn');
+
+    const addEquipmentBtn = document.getElementById('add-equipment-btn');
+    const equipmentsContainer = document.getElementById('equipments-container');
+
+    function showModal(modal, message = '') {
+      if (!modal) return;
+      if (message) {
+        const selector = modal.querySelector('#confirm-message, #error-message, #success-text');
+        if (selector) selector.textContent = message;
+      }
+      modal.classList.remove('hidden'); modal.classList.add('flex');
+      document.body.style.overflow = 'hidden';
+    }
+    function hideModal(modal) {
+      if (!modal) return;
+      modal.classList.add('hidden'); modal.classList.remove('flex');
+      document.body.style.overflow = '';
+    }
+
+    const uppercaseFields = ['CLIENTE','NAVIO','CONTATO','OBRA','LOCAL','OS','EQUIPAMENTO','FABRICANTE','MODELO','NUMERO_SERIE','CIDADE','ESTADO'];
+    uppercaseFields.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('input', (ev) => {
+        const pos = el.selectionStart;
+        el.value = el.value.toUpperCase();
+        try { el.setSelectionRange(pos, pos); } catch(e){}
+      });
+    });
+
+    function updateSubmitButtonState() { submitBtn.disabled = activitiesContainer.children.length === 0; }
+    function clearForm() { reportForm.reset(); activitiesContainer.innerHTML = ''; equipmentsContainer.innerHTML = ''; addActivity(true); currentDocRef = null; }
+
+    function addEquipment(data = null) {
+      const div = document.createElement('div');
+      div.className = 'equip-item';
+      div.innerHTML = `
+        <input class="form-control equip-mini uppercase-input" placeholder="Equipamento" data-key="equip" />
+        <input class="form-control equip-mini uppercase-input" placeholder="Fabricante" data-key="fabricante" />
+        <input class="form-control equip-mini uppercase-input" placeholder="Modelo" data-key="modelo" />
+        <input class="form-control equip-mini uppercase-input" placeholder="Nº Série" data-key="sn" />
+        <button type="button" class="equip-remove" title="Remover equipamento" aria-label="Remover equipamento">&times;</button>
+      `;
+      equipmentsContainer.appendChild(div);
+      const removeBtn = div.querySelector('.equip-remove');
+      removeBtn.addEventListener('click', () => div.remove());
+      if (data && typeof data === 'object') {
+        div.querySelector('[data-key="equip"]').value = (data.equipamento || data.EQUIPAMENTO || '') ;
+        div.querySelector('[data-key="fabricante"]').value = (data.fabricante || data.FABRICANTE || '') ;
+        div.querySelector('[data-key="modelo"]').value = (data.modelo || data.MODELO || '') ;
+        div.querySelector('[data-key="sn"]').value = (data.numero_serie || data.NUMERO_SERIE || '') ;
+      }
+      div.querySelectorAll('.uppercase-input').forEach(inp => {
+        inp.addEventListener('input', (e) => {
+          const pos = inp.selectionStart;
+          inp.value = inp.value.toUpperCase();
+          try { inp.setSelectionRange(pos, pos); } catch(e){}
+        });
+      });
+      return div;
+    }
+
+    function addActivity(isInitial=false, data=null) {
+      const count = activitiesContainer.querySelectorAll('.activity-item').length;
+      if (count >= 30 && !isInitial) { showModal(errorModal, 'Máximo de 30 atividades permitidas.'); return; }
+      const div = document.createElement('div');
+      div.className = 'activity-item grid';
+      div.innerHTML = `
+        <button type="button" class="remove-activity-btn" title="Remover atividade"><i class="fas fa-times"></i></button>
+        <div class="c2">
+          <label class="form-label block">Data</label>
+          <input name="DATA" required class="form-control" type="date">
+        </div>
+        <div class="c2">
+          <label class="form-label block">Hora Início</label>
+          <input name="HORA_INICIO" required class="form-control" type="time" placeholder="HH:MM">
+        </div>
+        <div class="c2">
+          <label class="form-label block">Hora Fim</label>
+          <input name="HORA_FIM" required class="form-control" type="time" placeholder="HH:MM">
+        </div>
+        <div class="c3">
+          <label class="form-label block">Tipo</label>
+          <select name="TIPO" required class="form-control">
+            <option value="Servico">Serviço</option>
+            <option value="Manutencao">Manutenção</option>
+            <option value="Reparo">Reparo</option>
+            <option value="Mão-de-obra Técnica">Mão-de-obra Técnica</option>
+            <option value="Período de Espera">Período de Espera</option>
+            <option value="Viagem Terrestre">Viagem Terrestre</option>
+            <option value="Viagem Aérea">Viagem Aérea</option>
+            <option value="Translado">Translado</option>
+          </select>
+        </div>
+        <div class="c3">
+          <label class="form-label block">Km</label>
+          <input name="KM" class="form-control" type="text" inputmode="numeric" style="flex:1;" required>
+        </div>
+        <div class="c12" style="margin-top:6px">
+          <div class="desc-prefix hidden" aria-hidden="true"></div>
+          <div class="field-help">Descrição será gerada pelo sistema. Preencha Motivo/Origem/Destino conforme necessário.</div>
+        </div>
+        <div class="c12" style="display:flex;gap:8px;">
+          <div style="flex:1">
+            <label class="form-label block">Motivo (apenas Período de Espera)</label>
+            <input name="MOTIVO" class="form-control" type="text" disabled placeholder="Somente em Período de Espera">
+            <div class="field-help">Preenchido somente se Período de Espera</div>
+          </div>
+          <div style="flex:1;display:flex;gap:8px;">
+            <div style="flex:1">
+              <label class="form-label block">Origem</label>
+              <input name="ORIGEM" class="form-control" type="text" disabled placeholder="Local de origem (viagens)">
+              <div class="field-help">Local de origem (viagens)</div>
+            </div>
+            <div style="flex:1">
+              <label class="form-label block">Destino</label>
+              <input name="DESTINO" class="form-control" type="text" disabled placeholder="Local de destino (viagens)">
+              <div class="field-help">Local de destino (viagens)</div>
+            </div>
+          </div>
+        </div>
+        <div class="c12">
+          <div class="tech-row">
+            <div class="tech-box">
+              <label class="form-label">Técnico 1</label>
+              <input name="TECNICO1" required class="form-control" type="text">
+            </div>
+            <div class="tech-box">
+              <label class="form-label">Técnico 2 (opcional)</label>
+              <input name="TECNICO2" class="form-control" type="text">
+            </div>
+          </div>
+        </div>
+      `;
+
+      activitiesContainer.appendChild(div);
+      div.querySelector('.remove-activity-btn').addEventListener('click', () => { div.remove(); updateSubmitButtonState(); });
+
+      const tipoEl = div.querySelector('[name="TIPO"]');
+      const kmEl = div.querySelector('[name="KM"]');
+      const motivoEl = div.querySelector('[name="MOTIVO"]');
+      const origemEl = div.querySelector('[name="ORIGEM"]');
+      const destinoEl = div.querySelector('[name="DESTINO"]');
+      const prefixEl = div.querySelector('.desc-prefix');
+
+      function applyTipoRules() {
+        try {
+          if (!tipoEl || !kmEl) return;
+          const t = (tipoEl.value || '').trim();
+
+          const kmBlockedTypes = ['Mão-de-obra Técnica', 'Período de Espera'];
+          const travelTypes = ['Viagem Terrestre', 'Viagem Aérea', 'Translado'];
+
+          if (kmBlockedTypes.includes(t)) {
+            kmEl.disabled = true;
+            if (typeof kmEl.removeAttribute === 'function') kmEl.removeAttribute('required');
+          } else {
+            kmEl.disabled = false;
+            try { kmEl.setAttribute('required','required'); } catch(e){}
+          }
+
+          if (motivoEl) {
+            if (t === 'Período de Espera') {
+              motivoEl.disabled = false;
+              try { motivoEl.setAttribute('required','required'); } catch(e){}
+            } else {
+              motivoEl.disabled = true;
+              if (typeof motivoEl.removeAttribute === 'function') motivoEl.removeAttribute('required');
+            }
+          }
+
+          if (origemEl && destinoEl) {
+            if (travelTypes.includes(t)) {
+              origemEl.disabled = false;
+              destinoEl.disabled = false;
+              try { origemEl.setAttribute('required','required'); } catch(e){}
+              try { destinoEl.setAttribute('required','required'); } catch(e){}
+            } else {
+              origemEl.disabled = true;
+              destinoEl.disabled = true;
+              if (typeof origemEl.removeAttribute === 'function') origemEl.removeAttribute('required');
+              if (typeof destinoEl.removeAttribute === 'function') destinoEl.removeAttribute('required');
+            }
+          }
+
+          const prefixes = [];
+          if (t === 'Mão-de-obra Técnica') prefixes.push('Mão-de-obra Técnica');
+          if (t === 'Período de Espera' && motivoEl && motivoEl.value && motivoEl.value.trim()) prefixes.push('MOTIVO: ' + motivoEl.value.trim());
+          if (travelTypes.includes(t) && origemEl && destinoEl) {
+            const o = (origemEl.value || '').trim();
+            const d = (destinoEl.value || '').trim();
+            if (o || d) prefixes.push(`${o} x ${d}`);
+          }
+
+          if (prefixes.length > 0) {
+            prefixEl.textContent = prefixes.join('\n');
+            prefixEl.classList.remove('hidden');
+          } else {
+            prefixEl.textContent = '';
+            prefixEl.classList.add('hidden');
+          }
+        } catch (err) {
+          console.error('applyTipoRules error (handled):', err);
+        }
+      }
+
+      if (tipoEl) tipoEl.addEventListener('change', applyTipoRules);
+      [motivoEl, origemEl, destinoEl].forEach(inp => { if (inp) inp.addEventListener('input', applyTipoRules); });
+
+      if (data) {
+        if (data.DATA) div.querySelector('[name="DATA"]').value = data.DATA || '';
+        div.querySelector('[name="HORA_INICIO"]').value = data.HORA_INICIO || data.HORA || '';
+        div.querySelector('[name="HORA_FIM"]').value = data.HORA_FIM || '';
+        if (data.TIPO) div.querySelector('[name="TIPO"]').value = data.TIPO || 'Servico';
+        if (data.KM) div.querySelector('[name="KM"]').value = data.KM || '';
+        if (data.MOTIVO) div.querySelector('[name="MOTIVO"]').value = data.MOTIVO || '';
+        if (data.ORIGEM) div.querySelector('[name="ORIGEM"]').value = data.ORIGEM || '';
+        if (data.DESTINO) div.querySelector('[name="DESTINO"]').value = data.DESTINO || '';
+        div.querySelector('[name="TECNICO1"]').value = data.TECNICO1 || '';
+        div.querySelector('[name="TECNICO2"]').value = data.TECNICO2 || '';
+      }
+
+      try { applyTipoRules(); } catch(e){ console.error('applyTipoRules init', e); }
+
+      updateSubmitButtonState();
+    }
+
+    function validateForm() {
+      const required = reportForm.querySelectorAll('[required]');
+      let ok = true;
+      required.forEach(f => {
+        if (f.disabled) return;
+        if (!f.value || f.value.toString().trim() === '') { f.classList.add('error'); ok = false; } else f.classList.remove('error');
+      });
+      if (activitiesContainer.children.length === 0) { showModal(errorModal, 'Adicione pelo menos uma atividade.'); ok = false; }
+      const activities = activitiesContainer.querySelectorAll('.activity-item');
+      activities.forEach(item => {
+        const h1 = item.querySelector('[name="HORA_INICIO"]');
+        const h2 = item.querySelector('[name="HORA_FIM"]');
+        if ((!h1.value || !h2.value) && !item.querySelector('[name="HORA"]')) {
+          if (h1) h1.classList.add('error');
+          if (h2) h2.classList.add('error');
+          ok = false;
+        }
+      });
+      return ok;
+    }
+
+    function buildPayload() {
+      const fd = new FormData(reportForm);
+      const payload = {
+        CLIENTE: fd.get('CLIENTE') || '',
+        NAVIO: fd.get('NAVIO') || '',
+        CONTATO: fd.get('CONTATO') || '',
+        OBRA: fd.get('OBRA') || '',
+        LOCAL: fd.get('LOCAL') || '',
+        CIDADE: fd.get('CIDADE') || '',
+        ESTADO: fd.get('ESTADO') || '',
+        OS: fd.get('OS') || '',
+        EQUIPAMENTO: fd.get('EQUIPAMENTO') || '',
+        FABRICANTE: fd.get('FABRICANTE') || '',
+        MODELO: fd.get('MODELO') || '',
+        NUMERO_SERIE: fd.get('NUMERO_SERIE') || '',
+        PROBLEMA_RELATADO: fd.get('PROBLEMA_RELATADO') || '',
+        SERVICO_REALIZADO: fd.get('SERVICO_REALIZADO') || '',
+        RESULTADO: fd.get('RESULTADO') || '',
+        PENDENCIAS: fd.get('PENDENCIAS') || '',
+        MATERIAL_CLIENTE: fd.get('MATERIAL_CLIENTE') || '',
+        MATERIAL_PRONAV: fd.get('MATERIAL_PRONAV') || '',
+        user_id: userId || 'anonymous_user',
+        activities: [],
+        EQUIPAMENTOS: []
+      };
+
+      const firstEquip = {
+        equipamento: payload.EQUIPAMENTO || '',
+        fabricante: payload.FABRICANTE || '',
+        modelo: payload.MODELO || '',
+        numero_serie: payload.NUMERO_SERIE || ''
+      };
+      if (firstEquip.equipamento || firstEquip.fabricante || firstEquip.modelo || firstEquip.numero_serie) {
+        payload.EQUIPAMENTOS.push(firstEquip);
+      }
+      const equipItems = equipmentsContainer.querySelectorAll('.equip-item');
+      equipItems.forEach(el => {
+        const equip = el.querySelector('[data-key="equip"]').value || '';
+        const fab = el.querySelector('[data-key="fabricante"]').value || '';
+        const mod = el.querySelector('[data-key="modelo"]').value || '';
+        const sn = el.querySelector('[data-key="sn"]').value || '';
+        if (equip || fab || mod || sn) {
+          payload.EQUIPAMENTOS.push({ equipamento: equip, fabricante: fab, modelo: mod, numero_serie: sn });
+        }
+      });
+
+      const items = activitiesContainer.querySelectorAll('.activity-item');
+      items.forEach(it => {
+        const tipoVal = (it.querySelector('[name="TIPO"]').value || '').trim();
+        const travelTypes = ['Viagem Terrestre', 'Viagem Aérea', 'Translado'];
+        const prefixes = [];
+        if (tipoVal === 'Mão-de-obra Técnica') prefixes.push('Mão-de-obra Técnica');
+        const motivoField = it.querySelector('[name="MOTIVO"]');
+        if (tipoVal === 'Período de Espera' && motivoField && motivoField.value && motivoField.value.trim()) prefixes.push('MOTIVO: ' + motivoField.value.trim());
+        const origemField = it.querySelector('[name="ORIGEM"]');
+        const destinoField = it.querySelector('[name="DESTINO"]');
+        if (travelTypes.includes(tipoVal) && (origemField || destinoField)) {
+          const o = origemField ? origemField.value.trim() : '';
+          const d = destinoField ? destinoField.value.trim() : '';
+          if (o || d) prefixes.push(`${o} x ${d}`);
+        }
+        // front does not provide free-text descrição anymore; send prefix (if any) so backend can build final description
+        const prefixText = prefixes.length ? prefixes.join('\n') : '';
+
+        payload.activities.push({
+          DATA: it.querySelector('[name="DATA"]').value || '',
+          HORA_INICIO: it.querySelector('[name="HORA_INICIO"]').value || '',
+          HORA_FIM: it.querySelector('[name="HORA_FIM"]').value || '',
+          TIPO: tipoVal || '',
+          KM: it.querySelector('[name="KM"]').value || '',
+          DESCRICAO: prefixText || '',
+          TECNICO1: it.querySelector('[name="TECNICO1"]').value || '',
+          TECNICO2: it.querySelector('[name="TECNICO2"]').value || '',
+          MOTIVO: (it.querySelector('[name="MOTIVO"]') && !it.querySelector('[name="MOTIVO"]').disabled) ? it.querySelector('[name="MOTIVO"]').value || '' : '',
+          ORIGEM: (it.querySelector('[name="ORIGEM"]') && !it.querySelector('[name="ORIGEM"]').disabled) ? it.querySelector('[name="ORIGEM"]').value || '' : '',
+          DESTINO: (it.querySelector('[name="DESTINO"]') && !it.querySelector('[name="DESTINO"]').disabled) ? it.querySelector('[name="DESTINO"]').value || '' : ''
+        });
+      });
+      if (currentDocRef && !firebaseAvailable) payload.report_id = currentDocRef;
+      return payload;
+    }
+
+    async function generateReport() {
+      if (!validateForm()) { showModal(errorModal, 'Preencha os campos obrigatórios.'); return; }
+      submitBtn.disabled = true;
+      const payload = buildPayload();
+      try {
+        const res = await fetch('/gerar-relatorio', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        if (!res.ok) {
+          const body = await res.json().catch(()=>null);
+          const msg = body ? (body.error || JSON.stringify(body)) : await res.text();
+          showModal(errorModal, 'Erro ao gerar relatório: ' + msg);
+          return;
+        }
+        const reportId = res.headers.get('X-Report-Id');
+        if (reportId) currentDocRef = reportId;
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.style.display='none'; a.href = url;
+        const shipSafe = (payload.NAVIO || 'Geral').replace(/\s+/g,'_');
+        const date = new Date().toISOString().replace(/[:.]/g,'-').split('T')[0];
+        const equipName = (payload.EQUIPAMENTOS && payload.EQUIPAMENTOS[0]) ? (payload.EQUIPAMENTOS[0].equipamento || '') : '';
+        const equipSafe = equipName ? ('_' + String(equipName).replace(/\s+/g,'_')) : '';
+        a.download = `PRONAV_${date}_${shipSafe}${equipSafe}.pdf`;
+        document.body.appendChild(a); a.click(); URL.revokeObjectURL(url);
+        showModal(successModal, 'Relatório gerado com sucesso!');
+      } catch (err) {
+        console.error(err);
+        showModal(errorModal, 'Erro de rede: ' + (err.message || err));
+      } finally { submitBtn.disabled = false; }
+    }
+
+    async function saveDraftToBackend(isUpdate=false) {
+      if (!validateForm()) { showModal(errorModal, 'Preencha os campos obrigatórios antes de salvar.'); return; }
+      saveBtn.disabled = true;
+      const payload = buildPayload();
+      try {
+        if (isUpdate && currentDocRef) {
+          const res = await fetch(`/atualizar-relatorio/${currentDocRef}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          const body = await res.json().catch(()=>null);
+          if (!res.ok) { showModal(errorModal, 'Erro ao atualizar rascunho: ' + (body?.error || JSON.stringify(body))); return; }
+          showModal(successModal, 'Rascunho atualizado com sucesso!');
+        } else {
+          const res = await fetch('/salvar-rascunho', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          const body = await res.json().catch(()=>null);
+          if (!res.ok) { showModal(errorModal, 'Erro ao salvar rascunho: ' + (body?.error || JSON.stringify(body))); return; }
+          if (body && body.report_id) currentDocRef = body.report_id;
+          showModal(successModal, 'Rascunho salvo com sucesso!');
+        }
+      } catch (e) {
+        console.error(e);
+        showModal(errorModal, 'Erro ao salvar rascunho: ' + (e.message || e));
+      } finally { saveBtn.disabled = false; }
+    }
+
+    function tryParseDate(value) {
+      if (!value) return null;
+      if (typeof value === 'number') return new Date(value > 1e12 ? value : value * 1000);
+      const n = Number(value);
+      if (!isNaN(n)) return new Date(n > 1e12 ? n : n * 1000);
+      const d = new Date(value);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    function formatDateTimeISO(value) {
+      const d = tryParseDate(value);
+      if (!d) return value || '';
+      try {
+        return d.toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'America/Sao_Paulo' });
+      } catch(e) {
+        return d.toLocaleString('pt-BR');
+      }
+    }
+
+    function renderSavedReports(reports) {
+      savedReportsList.innerHTML = '';
+      if (!reports || reports.length === 0) { noReportsMessage.classList.remove('hidden'); return; }
+      noReportsMessage.classList.add('hidden');
+
+      reports.forEach(r => {
+        const id = r.id || r.report_id || r.ID || r._id || '';
+        const client = (r.CLIENTE || r.client || '').toString().toUpperCase();
+        const ship = (r.NAVIO || r.ship || '').toString().toUpperCase();
+        const createdRaw = r.updated_at || r.created_at || r.updatedAt || r.createdAt || '';
+        const createdPretty = formatDateTimeISO(createdRaw);
+
+        const div = document.createElement('div');
+        div.className = 'activity-item compact';
+        div.innerHTML = `
+          <div class="meta">
+            <p title="${client} — ${ship}">${client}${client && ship ? ' - ' : ''}${ship}</p>
+            <p class="meta-sub">Atualizado em: <time datetime="${createdRaw}">${createdPretty}</time></p>
+          </div>
+          <div class="actions" role="group" aria-label="Ações do relatório">
+            <button title="Editar" class="btn-icon edit edit-report-btn" data-id="${id}" aria-label="Editar relatório ${id}"><i class="fas fa-edit"></i></button>
+            <button title="Baixar" class="btn-icon download download-report-btn" data-id="${id}" aria-label="Baixar relatório ${id}"><i class="fas fa-download"></i></button>
+            <button title="Deletar" class="btn-icon delete delete-report-btn" data-id="${id}" aria-label="Deletar relatório ${id}"><i class="fas fa-trash-alt"></i></button>
+          </div>
+        `;
+        savedReportsList.appendChild(div);
+      });
+    }
+
+    async function loadSavedReports() {
+      if (firebaseAvailable) return;
+      savedReportsList.innerHTML = '';
+      noReportsMessage.classList.remove('hidden');
+      try {
+        const res = await fetch(`/relatorios-salvos?user_id=${encodeURIComponent(userId)}`);
+        if (!res.ok) {
+          const txt = await res.text().catch(()=>null);
+          savedReportsList.innerHTML = `<div class="p-2 text-sm text-red-600">Erro ao carregar relatórios (server: ${res.status}). ${txt ? ('Mensagem: '+txt) : ''}</div>`;
+          return;
+        }
+        const arr = await res.json();
+        renderSavedReports(arr);
+      } catch (e) {
+        console.error(e);
+        savedReportsList.innerHTML = `<div class="p-2 text-sm text-red-600">Erro ao carregar relatórios: ${e.message || e}</div>`;
+      }
+    }
+
+    async function loadReportFromBackend(id) {
+      try {
+        const res = await fetch(`/relatorio/${id}`);
+        if (!res.ok) { const body = await res.json().catch(()=>null); showModal(errorModal, 'Erro ao carregar relatório: ' + (body?.error || JSON.stringify(body))); return; }
+        const d = await res.json();
+
+        const map = {
+          'CLIENTE': (d.client || d.CLIENTE || '').toString().toUpperCase(),
+          'NAVIO': (d.ship || d.NAVIO || '').toString().toUpperCase(),
+          'CONTATO': (d.contact || d.CONTATO || '').toString().toUpperCase(),
+          'OBRA': (d.work || d.OBRA || '').toString().toUpperCase(),
+          'LOCAL': (d.location || d.LOCAL || '').toString().toUpperCase(),
+          'OS': (d.os_number || d.OS || '').toString().toUpperCase(),
+          'EQUIPAMENTO': d.equipment || d.EQUIPAMENTO || '',
+          'FABRICANTE': d.manufacturer || d.FABRICANTE || '',
+          'MODELO': d.model || d.MODELO || '',
+          'NUMERO_SERIE': d.serial_number || d.NUMERO_SERIE || '',
+          'PROBLEMA_RELATADO': d.reported_problem || d.PROBLEMA_RELATADO || '',
+          'SERVICO_REALIZADO': d.service_performed || d.SERVICO_REALIZADO || '',
+          'RESULTADO': d.result || d.RESULTADO || '',
+          'PENDENCIAS': d.pending_issues || d.PENDENCIAS || '',
+          'MATERIAL_CLIENTE': d.client_material || d.MATERIAL_CLIENTE || '',
+          'MATERIAL_PRONAV': d.pronav_material || d.MATERIAL_PRONAV || '',
+          'CIDADE': d.CIDADE || d.city || '',
+          'ESTADO': d.ESTADO || d.state || ''
+        };
+        Object.keys(map).forEach(k => { const el = document.getElementById(k); if (el) el.value = map[k] || ''; });
+
+        // equipamentos: preenche container se existir
+        equipmentsContainer.innerHTML = '';
+        const eqs = d.EQUIPAMENTOS || d.equipamentos || [];
+        if (Array.isArray(eqs) && eqs.length > 0) {
+          const first = eqs[0] || {};
+          if (first.equipamento) document.getElementById('EQUIPAMENTO').value = (first.equipamento || '');
+          if (first.fabricante) document.getElementById('FABRICANTE').value = (first.fabricante || '');
+          if (first.modelo) document.getElementById('MODELO').value = (first.modelo || '');
+          if (first.numero_serie) document.getElementById('NUMERO_SERIE').value = (first.numero_serie || '');
+          eqs.slice(1).forEach(e => addEquipment(e));
+        }
+
+        // atividades
+        activitiesContainer.innerHTML = '';
+        let acts = [];
+        if (Array.isArray(d.activities)) acts = d.activities;
+        else if (d.activities) { try { acts = JSON.parse(d.activities); } catch(e) { acts = []; } }
+        if (acts.length === 0) addActivity(true);
+        acts.forEach(a => addActivity(false, a));
+        currentDocRef = id;
+
+        // MOSTRAR A TELA DE EDIÇÃO sem limpar o formulário
+        document.getElementById('new-report-view').classList.remove('hidden');
+        document.getElementById('saved-reports-view').classList.add('hidden');
+        newReportNav.classList.add('active');
+        savedReportsNav.classList.remove('active');
+
+      } catch (e) { console.error(e); showModal(errorModal, 'Erro ao carregar relatório: ' + (e.message || e)); }
+    }
+
+
+    async function deleteReportBackend(id) {
+      showModal(confirmModal, 'Deseja realmente deletar este relatório?');
+      confirmOkBtn.onclick = async () => {
+        hideModal(confirmModal);
+        try {
+          const res = await fetch(`/relatorio/${id}`, { method: 'DELETE' });
+          const body = await res.json().catch(()=>null);
+          if (!res.ok) { showModal(errorModal, 'Erro ao deletar relatório: ' + (body?.error || JSON.stringify(body))); return; }
+          showModal(successModal, 'Relatório deletado com sucesso!');
+          loadSavedReports();
+        } catch (e) { console.error(e); showModal(errorModal, 'Erro ao deletar relatório: ' + (e.message || e)); }
+      };
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      addActivity(true);
+      updateSubmitButtonState();
+
+      newReportNav.addEventListener('click', () => {
+        document.getElementById('new-report-view').classList.remove('hidden');
+        document.getElementById('saved-reports-view').classList.add('hidden');
+        newReportNav.classList.add('active');
+        savedReportsNav.classList.remove('active');
+        clearForm();
+      });
+      savedReportsNav.addEventListener('click', () => {
+        document.getElementById('new-report-view').classList.add('hidden');
+        document.getElementById('saved-reports-view').classList.remove('hidden');
+        newReportNav.classList.remove('active');
+        savedReportsNav.classList.add('active');
+        loadSavedReports();
+      });
+
+      if (closeModalBtn) closeModalBtn.addEventListener('click', () => hideModal(successModal));
+      if (closeErrorBtn) closeErrorBtn.addEventListener('click', () => hideModal(errorModal));
+      if (confirmCancelBtn) confirmCancelBtn.addEventListener('click', () => hideModal(confirmModal));
+
+      if (addActivityBtn) addActivityBtn.addEventListener('click', () => addActivity());
+      if (addEquipmentBtn) addEquipmentBtn.addEventListener('click', () => addEquipment());
+
+      savedReportsList.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const id = btn.dataset.id;
+        if (btn.classList.contains('edit-report-btn')) { loadReportFromBackend(id);
+        } else if (btn.classList.contains('download-report-btn')) {
+          (async() => {
+            try {
+              const res = await fetch(`/relatorio/${id}`);
+              if (!res.ok) { showModal(errorModal, 'Erro ao buscar relatório para download.'); return; }
+              const d = await res.json();
+              d.report_id = id;
+              const gen = await fetch('/gerar-relatorio', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(d) });
+              if (!gen.ok) { const err = await gen.json().catch(()=>null); showModal(errorModal, 'Erro ao gerar PDF: ' + (err?.error||JSON.stringify(err))); return; }
+              const blob = await gen.blob();
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a'); link.href = url;
+              const shipSafe = ((d.NAVIO || d.ship) || 'Geral').replace(/\s+/g,'_');
+              const equipName = (d.EQUIPAMENTOS && d.EQUIPAMENTOS[0]) ? (d.EQUIPAMENTOS[0].equipamento || '') : '';
+              const equipSafe = equipName ? ('_' + String(equipName).replace(/\s+/g,'_')) : '';
+              const date = new Date().toISOString().replace(/[:.]/g,'-').split('T')[0];
+              link.download = `PRONAV_${date}_${shipSafe}${equipSafe}.pdf`;
+              document.body.appendChild(link); link.click(); URL.revokeObjectURL(url);
+            } catch(e){ console.error(e); showModal(errorModal, 'Erro ao baixar relatório.'); }
+          })();
+        } else if (btn.classList.contains('delete-report-btn')) {
+          deleteReportBackend(id);
+        }
+      });
+
+      if (saveBtn) saveBtn.addEventListener('click', () => { if (currentDocRef) saveDraftToBackend(true); else saveDraftToBackend(false); });
+
+      reportForm.addEventListener('submit', (e) => { e.preventDefault(); generateReport(); });
+    });
+  </script>
+</body>
+</html>
