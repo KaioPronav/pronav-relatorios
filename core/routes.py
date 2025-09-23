@@ -1,10 +1,10 @@
 from flask import request, send_file, render_template, jsonify, Response
 from functools import wraps
 import requests
-from models import ReportRequest, Activity
-from normalizers import normalize_payload
-from pdf_service import PDFService
-from config import Config
+from pronav.models import ReportRequest, Activity
+from pronav.normalizers import normalize_payload
+from pronav.pdf_service import PDFService
+from pronav.config import Config
 import json
 from datetime import datetime
 

@@ -11,8 +11,9 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
-from normalizers import ensure_upper_safe
-from utils import format_date_br
+from pronav.normalizers import ensure_upper_safe
+from pronav.utils import format_date_br
+
 
 class PDFService:
     def __init__(self, config):
