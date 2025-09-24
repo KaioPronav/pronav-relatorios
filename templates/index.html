@@ -386,9 +386,6 @@
         <div class="c3">
           <label class="form-label block">Tipo</label>
           <select name="TIPO" required class="form-control">
-            <option value="Servico">Serviço</option>
-            <option value="Manutencao">Manutenção</option>
-            <option value="Reparo">Reparo</option>
             <option value="Mão-de-obra Técnica">Mão-de-obra Técnica</option>
             <option value="Período de Espera">Período de Espera</option>
             <option value="Viagem Terrestre">Viagem Terrestre</option>
@@ -439,10 +436,9 @@
 
       activitiesContainer.appendChild(div);
 
-      // remoção
+      // remover atividade
       div.querySelector('.remove-activity-btn').addEventListener('click', () => { div.remove(); updateSubmitButtonState(); });
 
-      // elementos-chave
       const tipoEl = div.querySelector('[name="TIPO"]');
       const kmEl = div.querySelector('[name="KM"]');
       const motivoEl = div.querySelector('[name="MOTIVO"]');
@@ -450,7 +446,6 @@
       const destinoEl = div.querySelector('[name="DESTINO"]');
       const prefixEl = div.querySelector('.desc-prefix');
 
-      // regras (mesmas do seu código, mas com ligação de eventos)
       function applyTipoRules() {
         try {
           if (!tipoEl || !kmEl) return;
@@ -459,21 +454,21 @@
           const kmBlockedTypes = ['Mão-de-obra Técnica', 'Período de Espera', 'Viagem Aérea', 'Translado'];
           const travelTypes = ['Viagem Terrestre', 'Viagem Aérea', 'Translado'];
 
-          // KM
+          // KM: limpar e bloquear quando necessário
           if (kmBlockedTypes.includes(t)) {
             kmEl.value = '';
             kmEl.disabled = true;
             kmEl.removeAttribute('required');
           } else {
             kmEl.disabled = false;
-            kmEl.setAttribute('required', 'required');
+            kmEl.setAttribute('required','required');
           }
 
           // MOTIVO
           if (motivoEl) {
             if (t === 'Período de Espera') {
               motivoEl.disabled = false;
-              motivoEl.setAttribute('required', 'required');
+              motivoEl.setAttribute('required','required');
             } else {
               motivoEl.value = '';
               motivoEl.disabled = true;
@@ -481,13 +476,13 @@
             }
           }
 
-          // ORIGEM/DESTINO
+          // ORIGEM / DESTINO
           if (origemEl && destinoEl) {
             if (travelTypes.includes(t)) {
               origemEl.disabled = false;
               destinoEl.disabled = false;
-              origemEl.setAttribute('required', 'required');
-              destinoEl.setAttribute('required', 'required');
+              origemEl.setAttribute('required','required');
+              destinoEl.setAttribute('required','required');
             } else {
               origemEl.value = '';
               destinoEl.value = '';
@@ -498,7 +493,7 @@
             }
           }
 
-          // prefixo de descrição
+          // DESCRIÇÃO (prefixEl) - sem conversão automática para caps
           let descVal = '';
           if (t === 'Mão-de-obra Técnica') {
             descVal = 'Mão-de-Obra-Técnica';
@@ -523,57 +518,48 @@
         }
       }
 
-      // ligar eventos para manter a UI reativa
-      if (tipoEl) tipoEl.addEventListener('change', applyTipoRules);
-      if (motivoEl) motivoEl.addEventListener('input', applyTipoRules);
-      if (origemEl) origemEl.addEventListener('input', applyTipoRules);
-      if (destinoEl) destinoEl.addEventListener('input', applyTipoRules);
+      // attach listeners
+      tipoEl.addEventListener('change', applyTipoRules);
+      motivoEl && motivoEl.addEventListener('input', applyTipoRules);
+      origemEl && origemEl.addEventListener('input', applyTipoRules);
+      destinoEl && destinoEl.addEventListener('input', applyTipoRules);
 
-      // Garantia 1: KM só aceita números, vírgula ou ponto (limpa qualquer letra / ' x ' instantaneamente)
-      if (kmEl) {
-        kmEl.addEventListener('input', () => {
-          // remove tudo que não seja 0-9, vírgula ou ponto
-          const cleaned = kmEl.value.replace(/[^0-9.,]/g, '');
-          if (cleaned !== kmEl.value) kmEl.value = cleaned;
-        });
-
-        // Se por algum motivo Origem/Destino tentarem escrever em KM (ex.: autofill / JS bug),
-        // mantemos KM apenas como número: ao mudar origem/destino, limpamos qualquer texto
-        const ensureKmNumeric = () => {
-          if (!kmEl) return;
-          if (/[A-Za-z×x]/.test(kmEl.value)) {
-            // remove letras e símbolos de texto
-            kmEl.value = kmEl.value.replace(/[^0-9.,]/g, '');
-          }
-        };
-        if (origemEl) origemEl.addEventListener('input', ensureKmNumeric);
-        if (destinoEl) destinoEl.addEventListener('input', ensureKmNumeric);
-      }
-
-
-      // se vier dados (carregar rascunho/edição), preenche os campos
+      // populate values if data provided (no auto-scroll in this case)
       if (data && typeof data === 'object') {
         try {
-          if (data.DATA) div.querySelector('[name="DATA"]').value = data.DATA;
-          if (data.HORA_INICIO) div.querySelector('[name="HORA_INICIO"]').value = data.HORA_INICIO;
-          if (data.HORA_FIM) div.querySelector('[name="HORA_FIM"]').value = data.HORA_FIM;
-          if (data.TIPO) tipoEl.value = data.TIPO;
-          if (data.KM) kmEl.value = data.KM;
-          if (data.MOTIVO) motivoEl.value = data.MOTIVO;
-          if (data.ORIGEM) origemEl.value = data.ORIGEM;
-          if (data.DESTINO) destinoEl.value = data.DESTINO;
-          if (data.TECNICO1) div.querySelector('[name="TECNICO1"]').value = data.TECNICO1;
-          if (data.TECNICO2) div.querySelector('[name="TECNICO2"]').value = data.TECNICO2;
-        } catch(e) { console.warn('Erro ao popular atividade:', e); }
+          const setIf = (selectorName, value) => {
+            const el = div.querySelector(`[name="${selectorName}"]`);
+            if (el && value !== undefined && value !== null) el.value = value;
+          };
+          setIf('DATA', data.DATA || data.data || '');
+          setIf('HORA_INICIO', data.HORA_INICIO || data.hora_inicio || '');
+          setIf('HORA_FIM', data.HORA_FIM || data.hora_fim || '');
+          setIf('TIPO', data.TIPO || data.tipo || '');
+          setIf('KM', data.KM || data.km || '');
+          setIf('MOTIVO', data.MOTIVO || data.motivo || '');
+          setIf('ORIGEM', data.ORIGEM || data.origem || '');
+          setIf('DESTINO', data.DESTINO || data.destino || '');
+          setIf('TECNICO1', data.TECNICO1 || data.tecnico1 || '');
+          setIf('TECNICO2', data.TECNICO2 || data.tecnico2 || '');
+          applyTipoRules();
+        } catch (e) { console.error(e); }
       }
 
-      // aplicar regras logo após inserir
-      applyTipoRules();
       updateSubmitButtonState();
+
+      // Smooth scroll + focus: ONLY when the call is user-initiated (not initial load and not when loading data)
+      if (!isInitial && !data) {
+        try {
+          div.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          const firstInput = div.querySelector('[name="DATA"]');
+          if (firstInput) {
+            setTimeout(() => { try { firstInput.focus(); } catch(e){} }, 260);
+          }
+        } catch (e) { /* ignore scroll errors */ }
+      }
 
       return div;
     }
-
 
     function validateForm() {
       const required = reportForm.querySelectorAll('[required]');
@@ -661,7 +647,8 @@
       // Atividades
       const items = activitiesContainer.querySelectorAll('.activity-item');
       items.forEach(it => {
-        const tipoVal = ((it.querySelector('[name="TIPO"]') && it.querySelector('[name="TIPO"]').value) || '').trim();
+        const tipoEl = it.querySelector('[name="TIPO"]');
+        const tipoVal = ((tipoEl && tipoEl.value) || '').trim();
 
         // Campos fonte
         const dataVal = (it.querySelector('[name="DATA"]') && it.querySelector('[name="DATA"]').value) || '';
@@ -675,7 +662,8 @@
         const destinoField = it.querySelector('[name="DESTINO"]');
         const kmField = it.querySelector('[name="KM"]');
 
-        // Valores textuais (trim)
+        // Valores textuais (TRIM apenas para remover espaços nas extremidades;
+        // não convertemos para uppercase — mantemos exatamente como o usuário escreveu)
         const motivoText = (motivoField && motivoField.value) ? motivoField.value.trim() : '';
         const origemText = (origemField && origemField.value) ? origemField.value.trim() : '';
         const destinoText = (destinoField && destinoField.value) ? destinoField.value.trim() : '';
@@ -688,13 +676,21 @@
           if (motivoField && !motivoField.disabled && motivoText) descVal = motivoText;
         } else if (travelTypes.includes(tipoVal)) {
           if (origemText || destinoText) descVal = `${origemText} x ${destinoText}`;
+        } else {
+          // Para tipos não listados ou futuros, preservamos DESCRICAO se existir no DOM (desc-prefix)
+          const prefixEl = it.querySelector('.desc-prefix');
+          if (prefixEl && !prefixEl.classList.contains('hidden') && prefixEl.textContent) {
+            descVal = String(prefixEl.textContent || '').trim();
+          }
         }
 
-        // --- KM (somente manual) ---
-        let kmVal = (kmField && kmField.value) ? kmField.value.trim() : '';
+        // --- KM (somente manual, e somente se o tipo NÃO bloquear KM)
         const isKmBlocked = kmBlockedTypes.includes(tipoVal);
-        if (isKmBlocked) {
-          kmVal = ''; // se o tipo bloqueia, zera sempre
+        let kmVal = '';
+        if (!isKmBlocked && kmField && kmField.value) {
+          kmVal = kmField.value.trim();
+        } else {
+          kmVal = '';
         }
 
         const motivoPayload = (motivoField && !motivoField.disabled) ? (motivoField.value || '') : '';
@@ -720,6 +716,7 @@
       if (currentDocRef && !firebaseAvailable) payload.report_id = currentDocRef;
       return payload;
     }
+
 
 
     async function generateReport() {
