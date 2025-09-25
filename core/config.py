@@ -17,10 +17,12 @@ def _env_float(name, default, minv=None, maxv=None):
     return f
 
 class Config:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DEBUG = False
+    TESTING = False
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     # Banco / App
-    DATABASE = os.environ.get('DATABASE_PATH', 'reports.db')
+    DATABASE = os.environ.get('DATABASE', os.path.join(BASE_DIR, 'reports.db'))
     SECRET_KEY = os.environ.get('SECRET_KEY', 'fallback-secret-key')
     MAX_WORKERS = int(os.environ.get('MAX_WORKERS', 4))
     REQUEST_TIMEOUT = int(os.environ.get('REQUEST_TIMEOUT', 30))

@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from flask import g
 from contextlib import contextmanager
+import os
 
 class DatabaseManager:
     def __init__(self, app):
@@ -10,15 +11,54 @@ class DatabaseManager:
 
     def get_db(self):
         if 'db' not in g:
-            db_path = self.app.config['DATABASE']
+            # pega da config (já garantida como absoluta em core/config.py)
+            db_path = self.app.config.get('DATABASE') or 'reports.db'
+            # normaliza
+            db_path = os.path.normpath(db_path)
+
+            # se for relativo (por segurança), torna absoluto relativo à root do app
+            if not os.path.isabs(db_path):
+                db_path = os.path.join(self.app.root_path, db_path)
+
+            # cria diretório pai caso não exista (SQLite não cria diretórios)
+            db_dir = os.path.dirname(db_path)
+            if db_dir and not os.path.exists(db_dir):
+                try:
+                    os.makedirs(db_dir, exist_ok=True)
+                except Exception as e:
+                    # registra mas continua pra erro do sqlite deixar claro depois
+                    try:
+                        self.app.logger.warning("Não foi possível criar diretório do DB: %s — %s", db_dir, e)
+                    except Exception:
+                        pass
+
+            # loga caminho absoluto e existência para diagnóstico
+            try:
+                self.app.logger.info("Abrindo DB em: %s (exists=%s)", db_path, os.path.exists(db_path))
+            except Exception:
+                pass
+
+            # garante que o ficheiro exista (open em append cria se não existir)
+            try:
+                open(db_path, 'a').close()
+            except Exception:
+                pass
+
+            # conecta
             conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
             conn.row_factory = sqlite3.Row
+
+            # tenta setar pragmas — se falhar, ignoramos (ex.: FS sem suporte)
             try:
                 conn.execute('PRAGMA journal_mode = WAL')
                 conn.execute('PRAGMA synchronous = NORMAL')
                 conn.execute('PRAGMA foreign_keys = ON')
             except Exception:
-                pass
+                try:
+                    conn.execute('PRAGMA foreign_keys = ON')
+                except Exception:
+                    pass
+
             g.db = conn
         return g.db
 
@@ -27,10 +67,8 @@ class DatabaseManager:
         db = self.get_db()
         try:
             yield db
-        except sqlite3.Error as e:
-            db.rollback()
-            raise
         finally:
+            # não fecha aqui se quiser reusar na app lifetime; caso queira fechar:
             pass
 
     def ensure_table_columns(self, db):

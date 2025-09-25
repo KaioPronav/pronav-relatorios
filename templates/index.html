@@ -305,6 +305,33 @@
     const addEquipmentBtn = document.getElementById('add-equipment-btn');
     const equipmentsContainer = document.getElementById('equipments-container');
 
+    // -----------------------------
+    // Normalização e sets reutilizáveis
+    // -----------------------------
+    const norm = s => (s || '')
+      .toString()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // remove acentos
+      .replace(/[-_]/g, ' ')           // normaliza hífens/underscores
+      .replace(/\s+/g, ' ')            // colapsa múltiplos espaços
+      .trim()
+      .toLowerCase();
+
+    // listas canônicas em lower-case (usadas pela regra)
+    const KM_BLOCKED_TYPES = [
+      'mão-de-obra técnica',
+      'mão-de-obra-técnica',
+      'período de espera',
+      'viagem aérea',
+      'translado'
+    ].map(s => s.toLowerCase());
+
+    const TRAVEL_TYPES = [
+      'viagem terrestre',
+      'viagem aérea',
+      'translado'
+    ].map(s => s.toLowerCase());
+
     function showModal(modal, message = '') {
       if (!modal) return;
       if (message) {
@@ -361,6 +388,93 @@
         });
       });
       return div;
+    }
+
+    /**
+     * Aplica regras de habilitar/bloquear e prefixo de descrição
+     * para uma activity (elemento .activity-item).
+     * Centraliza a lógica para uso no load inicial e em eventos.
+     */
+    function applyTipoRulesToActivity(activityEl) {
+      try {
+        if (!activityEl) return;
+        const tipoEl = activityEl.querySelector('[name="TIPO"]');
+        const kmEl = activityEl.querySelector('[name="KM"]');
+        const motivoEl = activityEl.querySelector('[name="MOTIVO"]');
+        const origemEl = activityEl.querySelector('[name="ORIGEM"]');
+        const destinoEl = activityEl.querySelector('[name="DESTINO"]');
+        const prefixEl = activityEl.querySelector('.desc-prefix');
+
+        if (!tipoEl || !kmEl) return;
+        const t = (tipoEl.value || '').toString().trim().toLowerCase();
+
+        // KM: limpar e bloquear quando necessário
+        if (KM_BLOCKED_TYPES.includes(t)) {
+          kmEl.value = '';
+          kmEl.disabled = true;
+          kmEl.removeAttribute('required');
+        } else {
+          kmEl.disabled = false;
+          kmEl.setAttribute('required','required');
+        }
+
+        // MOTIVO (só para "Período de Espera")
+        if (motivoEl) {
+          if (t === 'período de espera') {
+            motivoEl.disabled = false;
+            motivoEl.setAttribute('required','required');
+          } else {
+            motivoEl.value = '';
+            motivoEl.disabled = true;
+            motivoEl.removeAttribute('required');
+          }
+        }
+
+        // ORIGEM / DESTINO (para tipos de viagem)
+        if (origemEl && destinoEl) {
+          if (TRAVEL_TYPES.includes(t)) {
+            origemEl.disabled = false;
+            destinoEl.disabled = false;
+            origemEl.setAttribute('required','required');
+            destinoEl.setAttribute('required','required');
+          } else {
+            origemEl.value = '';
+            destinoEl.value = '';
+            origemEl.disabled = true;
+            destinoEl.disabled = true;
+            origemEl.removeAttribute('required');
+            destinoEl.removeAttribute('required');
+          }
+        }
+
+        // DESCRIÇÃO (prefixEl)
+        let descVal = '';
+        if (t === 'mão-de-obra técnica' || t === 'mão de obra técnica' || t === 'mão-de-obra-técnica') {
+          descVal = 'Mão-de-Obra-Técnica';
+        } else if (t === 'período de espera') {
+          if (motivoEl && !motivoEl.disabled && motivoEl.value.trim()) descVal = motivoEl.value.trim();
+        } else if (TRAVEL_TYPES.includes(t)) {
+          const o = (origemEl && origemEl.value) ? origemEl.value.trim() : '';
+          const d = (destinoEl && destinoEl.value) ? destinoEl.value.trim() : '';
+          if (o || d) descVal = `${o} x ${d}`;
+        } else {
+          // preserva prefix se houver (para tipos custom)
+          if (prefixEl && !prefixEl.classList.contains('hidden') && prefixEl.textContent) {
+            descVal = String(prefixEl.textContent || '').trim();
+          }
+        }
+
+        if (descVal) {
+          prefixEl.textContent = descVal;
+          prefixEl.classList.remove('hidden');
+        } else {
+          prefixEl.textContent = '';
+          prefixEl.classList.add('hidden');
+        }
+
+      } catch (err) {
+        console.error('applyTipoRulesToActivity error (handled):', err);
+      }
     }
 
     function addActivity(isInitial = false, data = null) {
@@ -439,92 +553,18 @@
       // remover atividade
       div.querySelector('.remove-activity-btn').addEventListener('click', () => { div.remove(); updateSubmitButtonState(); });
 
+      // listeners para atualizar regras ao mudar campos
       const tipoEl = div.querySelector('[name="TIPO"]');
-      const kmEl = div.querySelector('[name="KM"]');
       const motivoEl = div.querySelector('[name="MOTIVO"]');
       const origemEl = div.querySelector('[name="ORIGEM"]');
       const destinoEl = div.querySelector('[name="DESTINO"]');
-      const prefixEl = div.querySelector('.desc-prefix');
 
-      function applyTipoRules() {
-        try {
-          if (!tipoEl || !kmEl) return;
-          const t = (tipoEl.value || '').trim();
+      if (tipoEl) tipoEl.addEventListener('change', () => applyTipoRulesToActivity(div));
+      if (motivoEl) motivoEl.addEventListener('input', () => applyTipoRulesToActivity(div));
+      if (origemEl) origemEl.addEventListener('input', () => applyTipoRulesToActivity(div));
+      if (destinoEl) destinoEl.addEventListener('input', () => applyTipoRulesToActivity(div));
 
-          const kmBlockedTypes = ['Mão-de-obra Técnica', 'Período de Espera', 'Viagem Aérea', 'Translado'];
-          const travelTypes = ['Viagem Terrestre', 'Viagem Aérea', 'Translado'];
-
-          // KM: limpar e bloquear quando necessário
-          if (kmBlockedTypes.includes(t)) {
-            kmEl.value = '';
-            kmEl.disabled = true;
-            kmEl.removeAttribute('required');
-          } else {
-            kmEl.disabled = false;
-            kmEl.setAttribute('required','required');
-          }
-
-          // MOTIVO
-          if (motivoEl) {
-            if (t === 'Período de Espera') {
-              motivoEl.disabled = false;
-              motivoEl.setAttribute('required','required');
-            } else {
-              motivoEl.value = '';
-              motivoEl.disabled = true;
-              motivoEl.removeAttribute('required');
-            }
-          }
-
-          // ORIGEM / DESTINO
-          if (origemEl && destinoEl) {
-            if (travelTypes.includes(t)) {
-              origemEl.disabled = false;
-              destinoEl.disabled = false;
-              origemEl.setAttribute('required','required');
-              destinoEl.setAttribute('required','required');
-            } else {
-              origemEl.value = '';
-              destinoEl.value = '';
-              origemEl.disabled = true;
-              destinoEl.disabled = true;
-              origemEl.removeAttribute('required');
-              destinoEl.removeAttribute('required');
-            }
-          }
-
-          // DESCRIÇÃO (prefixEl) - sem conversão automática para caps
-          let descVal = '';
-          if (t === 'Mão-de-obra Técnica') {
-            descVal = 'Mão-de-Obra-Técnica';
-          } else if (t === 'Período de Espera' && motivoEl && motivoEl.value.trim()) {
-            descVal = motivoEl.value.trim();
-          } else if (travelTypes.includes(t) && origemEl && destinoEl) {
-            const o = (origemEl.value || '').trim();
-            const d = (destinoEl.value || '').trim();
-            if (o || d) descVal = `${o} x ${d}`;
-          }
-
-          if (descVal) {
-            prefixEl.textContent = descVal;
-            prefixEl.classList.remove('hidden');
-          } else {
-            prefixEl.textContent = '';
-            prefixEl.classList.add('hidden');
-          }
-
-        } catch (err) {
-          console.error('applyTipoRules error (handled):', err);
-        }
-      }
-
-      // attach listeners
-      tipoEl.addEventListener('change', applyTipoRules);
-      motivoEl && motivoEl.addEventListener('input', applyTipoRules);
-      origemEl && origemEl.addEventListener('input', applyTipoRules);
-      destinoEl && destinoEl.addEventListener('input', applyTipoRules);
-
-      // populate values if data provided (no auto-scroll in this case)
+      // populate values if data provided
       if (data && typeof data === 'object') {
         try {
           const setIf = (selectorName, value) => {
@@ -541,8 +581,12 @@
           setIf('DESTINO', data.DESTINO || data.destino || '');
           setIf('TECNICO1', data.TECNICO1 || data.tecnico1 || '');
           setIf('TECNICO2', data.TECNICO2 || data.tecnico2 || '');
-          applyTipoRules();
+          // aplicar regras após popular valores (garante estado inicial correto)
+          applyTipoRulesToActivity(div);
         } catch (e) { console.error(e); }
+      } else {
+        // aplica estado padrão para o novo elemento vazio
+        applyTipoRulesToActivity(div);
       }
 
       updateSubmitButtonState();
@@ -887,6 +931,12 @@
         acts.forEach(a => addActivity(false, a));
         currentDocRef = id;
 
+        // garantir aplicação das regras para todas atividades carregadas (cobertura extra)
+        setTimeout(() => {
+          const all = activitiesContainer.querySelectorAll('.activity-item');
+          all.forEach(it => applyTipoRulesToActivity(it));
+        }, 20);
+
         // MOSTRAR A TELA DE EDIÇÃO sem limpar o formulário
         document.getElementById('new-report-view').classList.remove('hidden');
         document.getElementById('saved-reports-view').classList.add('hidden');
@@ -913,6 +963,12 @@
     document.addEventListener('DOMContentLoaded', () => {
       addActivity(true);
       updateSubmitButtonState();
+
+      // garantir que, no carregamento (F5), qualquer atividade já presente seja ajustada
+      setTimeout(() => {
+        const all = activitiesContainer.querySelectorAll('.activity-item');
+        all.forEach(it => applyTipoRulesToActivity(it));
+      }, 10);
 
       newReportNav.addEventListener('click', () => {
         document.getElementById('new-report-view').classList.remove('hidden');

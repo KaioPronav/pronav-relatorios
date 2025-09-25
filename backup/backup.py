@@ -1,22 +1,17 @@
-# app_reportlab_layout_final.py
+# core/pdf_service.py
 import io
 import os
-import json
-import sqlite3
-import logging
-from logging.handlers import RotatingFileHandler
+import re
+import pkgutil
+import unicodedata
+import string
+from pathlib import Path
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-from functools import wraps
-from contextlib import contextmanager
-from dotenv import load_dotenv
-import requests
-from flask import Flask, request, send_file, render_template, jsonify, g, Response
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
-from typing import List, Optional, Dict, Any
+from xml.sax.saxutils import escape as xml_escape
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
+    BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer, Table, TableStyle,
+    PageBreak, Flowable
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -24,1447 +19,1248 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
-from dateutil import parser as date_parser
+from core.normalizers import ensure_upper_safe
+from core.utils import format_date_br
 
-# ---------------- Config & Logging ----------------
-load_dotenv()
 
-try:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-except Exception:
-    BASE_DIR = os.getcwd()
+class HR(Flowable):
+    """Linha horizontal fina usada para indicar corte/continuação."""
+    def __init__(self, width, thickness=0.6, pad_top=1, pad_bottom=1):
+        super().__init__()
+        self.width = width
+        self.thickness = thickness
+        self.pad_top = pad_top
+        self.pad_bottom = pad_bottom
+        # altura total do flowable (considerando pads)
+        self.height = float(self.pad_top + self.thickness + self.pad_bottom)
 
-LOG_PATH = os.path.join(BASE_DIR, "app.log")
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+    def wrap(self, aW, aH):
+        return (self.width, self.height)
 
-file_handler = RotatingFileHandler(LOG_PATH, maxBytes=10_000_000, backupCount=5, encoding='utf-8')
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    def draw(self):
+        c = self.canv
+        c.saveState()
+        x0 = 0
+        x1 = self.width
+        y = self.pad_bottom
+        c.setLineWidth(self.thickness)
+        c.line(x0, y, x1, y)
+        c.restoreState()
 
-if not logger.handlers:
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
 
-# ---------------- Flask app ----------------
-app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"))
-app.config['DATABASE'] = os.environ.get('DATABASE_PATH', os.path.join(BASE_DIR, 'reports.db'))
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fallback-secret-key')
-app.config['MAX_WORKERS'] = int(os.environ.get('MAX_WORKERS', 4))
-app.config['REQUEST_TIMEOUT'] = int(os.environ.get('REQUEST_TIMEOUT', 30))
-DEFAULT_LOGO = os.path.join(BASE_DIR, 'logo.png')
-app.config['LOGO_PATH'] = os.environ.get('LOGO_PATH', DEFAULT_LOGO)
+class PDFService:
+    def __init__(self, config):
+        self.config = config
+        self.setup_fonts()
 
-executor = ThreadPoolExecutor(max_workers=app.config['MAX_WORKERS'])
+        # Layout constants
+        self.LINE_WIDTH = 0.6
+        self.GRAY = colors.HexColor('#D9D9D9')
+        # pads compactos para economizar espaço
+        self.SMALL_PAD = 2
+        self.MED_PAD = 3
+        self.BASE_TITLE_FONT_SIZE = 9.5
+        self.BASE_LABEL_FONT_SIZE = 8.5
+        self.BASE_VALUE_FONT_SIZE = 8.1
 
-# ---------------- Fonts ----------------
-FONT_REGULAR = 'Helvetica'
-FONT_BOLD = 'Helvetica-Bold'
-try:
-    arial = os.path.join(BASE_DIR, 'arial.ttf')
-    arialbd = os.path.join(BASE_DIR, 'arialbd.ttf')
-    if os.path.exists(arial):
-        pdfmetrics.registerFont(TTFont('Arial', arial))
-        FONT_REGULAR = 'Arial'
-        if os.path.exists(arialbd):
-            pdfmetrics.registerFont(TTFont('Arial-Bold', arialbd))
-            FONT_BOLD = 'Arial-Bold'
-        else:
-            pdfmetrics.registerFont(TTFont('Arial-Bold', arial))
-            FONT_BOLD = 'Arial-Bold'
-except Exception as e:
-    logger.info("Arial não registrado; usando Helvetica: %s", e)
-
-# ---------------- Layout constants ----------------
-LINE_WIDTH = 0.6
-GRAY = colors.HexColor('#D9D9D9')
-SMALL_PAD = 4
-MED_PAD = 4
-BASE_TITLE_FONT_SIZE = 9.0
-BASE_LABEL_FONT_SIZE = 8.0
-BASE_VALUE_FONT_SIZE = 7.5
-
-# ---------------- Service-specific configuration ----------------
-# Multiplicador aplicado apenas ao campo "SERVIÇO REALIZADO"
-SERVICE_VALUE_MULTIPLIER = float(os.environ.get('SERVICE_VALUE_MULTIPLIER', '1.25'))
-
-# ---------------- Models (Pydantic) ----------------
-class Activity(BaseModel):
-    DATA: str
-    HORA: Optional[str] = None
-    HORA_INICIO: Optional[str] = None
-    HORA_FIM: Optional[str] = None
-    TIPO: str
-    KM: Optional[str] = None
-    DESCRICAO: Optional[str] = ''
-    TECNICO1: str
-    TECNICO2: Optional[str] = None
-    MOTIVO: Optional[str] = None
-    ORIGEM: Optional[str] = None
-    DESTINO: Optional[str] = None
-
-    @field_validator('DATA', 'TIPO', 'TECNICO1', mode='before')
-    @classmethod
-    def validate_required(cls, v):
-        if v is None:
-            raise ValueError('Campo obrigatório não preenchido')
-        if isinstance(v, str) and not v.strip():
-            raise ValueError('Campo obrigatório não preenchido')
-        return v.strip() if isinstance(v, str) else v
-
-    @model_validator(mode='after')
-    def check_hours_present_and_km(self):
-        if self.HORA and isinstance(self.HORA, str) and self.HORA.strip():
-            pass
-        elif (self.HORA_INICIO and isinstance(self.HORA_INICIO, str) and self.HORA_INICIO.strip()
-              and self.HORA_FIM and isinstance(self.HORA_FIM, str) and self.HORA_FIM.strip()):
-            pass
-        else:
-            raise ValueError('Informe HORA (formato antigo) ou HORA_INICIO e HORA_FIM')
-
-        types_block_km = {"Mão-de-obra Técnica", "Período de Espera"}
-        tipo_norm = (self.TIPO or '').strip()
-        if tipo_norm not in types_block_km:
-            if self.KM is None or (isinstance(self.KM, str) and not self.KM.strip()):
-                raise ValueError('Campo KM obrigatório para este tipo de atividade')
-        return self
-
-class ReportRequest(BaseModel):
-    user_id: str
-    CLIENTE: str
-    NAVIO: str
-    CONTATO: str
-    OBRA: str
-    LOCAL: str
-    OS: str
-    EQUIPAMENTO: Optional[str] = ''
-    FABRICANTE: Optional[str] = ''
-    MODELO: Optional[str] = ''
-    NUMERO_SERIE: Optional[str] = ''
-    PROBLEMA_RELATADO: str
-    SERVICO_REALIZADO: str
-    RESULTADO: str
-    PENDENCIAS: str
-    MATERIAL_CLIENTE: str
-    MATERIAL_PRONAV: str
-    activities: List[Activity]
-    EQUIPAMENTOS: Optional[List[Dict[str, Any]]] = None
-    CIDADE: Optional[str] = None
-    ESTADO: Optional[str] = None
-
-    @field_validator('user_id', 'CLIENTE', 'NAVIO', 'CONTATO', 'OBRA', 'LOCAL', 'OS',
-                     'PROBLEMA_RELATADO', 'SERVICO_REALIZADO', 'RESULTADO',
-                     'PENDENCIAS', 'MATERIAL_CLIENTE', 'MATERIAL_PRONAV')
-    @classmethod
-    def validate_required_fields(cls, v):
-        if v is None:
-            raise ValueError('Campo obrigatório não preenchido')
-        if isinstance(v, str) and not v.strip():
-            raise ValueError('Campo obrigatório não preenchido')
-        return v.strip() if isinstance(v, str) else v
-
-# ---------------- DB helpers ----------------
-def get_db():
-    if 'db' not in g:
-        db_path = app.config['DATABASE']
-        conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
-        conn.row_factory = sqlite3.Row
+    def setup_fonts(self):
+        self.FONT_REGULAR = 'Helvetica'
+        self.FONT_BOLD = 'Helvetica-Bold'
         try:
-            conn.execute('PRAGMA journal_mode = WAL')
-            conn.execute('PRAGMA synchronous = NORMAL')
-            conn.execute('PRAGMA foreign_keys = ON')
-        except Exception:
-            pass
-        g.db = conn
-    return g.db
-
-@contextmanager
-def db_connection():
-    db = get_db()
-    try:
-        yield db
-    except sqlite3.Error as e:
-        db.rollback()
-        logger.error("DB error: %s", e)
-        raise
-    finally:
-        pass
-
-def ensure_table_columns(db):
-    cur = db.execute("PRAGMA table_info(reports)")
-    cols = [r['name'] for r in cur.fetchall()]
-
-    if 'status' not in cols:
-        try:
-            db.execute("ALTER TABLE reports ADD COLUMN status TEXT DEFAULT 'final'")
-            logger.info("Adicionado coluna 'status' em reports")
-        except sqlite3.Error as e:
-            logger.info("Não foi possível adicionar 'status' (talvez já exista): %s", e)
-
-    if 'updated_at' not in cols:
-        try:
-            db.execute("ALTER TABLE reports ADD COLUMN updated_at TIMESTAMP")
-            logger.info("Adicionado coluna 'updated_at' (sem default)")
-            try:
-                db.execute("UPDATE reports SET updated_at = created_at WHERE updated_at IS NULL")
-                logger.info("Populei 'updated_at' a partir de 'created_at' para linhas existentes")
-            except sqlite3.Error as e2:
-                logger.info("Não foi possível popular 'updated_at': %s", e2)
-        except sqlite3.Error as e:
-            logger.info("Não foi possível adicionar 'updated_at' (talvez já exista): %s", e)
-
-    if 'equipments' not in cols:
-        try:
-            db.execute("ALTER TABLE reports ADD COLUMN equipments TEXT")
-            logger.info("Adicionado coluna 'equipments' (JSON) em reports")
-        except sqlite3.Error as e:
-            logger.info("Não foi possível adicionar 'equipments' (talvez já exista): %s", e)
-
-    if 'city' not in cols:
-        try:
-            db.execute("ALTER TABLE reports ADD COLUMN city TEXT")
-            logger.info("Adicionado coluna 'city' em reports")
-        except sqlite3.Error as e:
-            logger.info("Não foi possível adicionar 'city' (talvez já exista): %s", e)
-    if 'state' not in cols:
-        try:
-            db.execute("ALTER TABLE reports ADD COLUMN state TEXT")
-            logger.info("Adicionado coluna 'state' em reports")
-        except sqlite3.Error as e:
-            logger.info("Não foi possível adicionar 'state' (talvez já exista): %s", e)
-
-def init_db():
-    with app.app_context(), db_connection() as db:
-        db.execute('''
-            CREATE TABLE IF NOT EXISTS reports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                client TEXT NOT NULL,
-                ship TEXT NOT NULL,
-                contact TEXT NOT NULL,
-                work TEXT NOT NULL,
-                location TEXT NOT NULL,
-                os_number TEXT NOT NULL,
-                equipment TEXT,
-                manufacturer TEXT,
-                model TEXT,
-                serial_number TEXT,
-                reported_problem TEXT,
-                service_performed TEXT,
-                result TEXT,
-                pending_issues TEXT,
-                client_material TEXT,
-                pronav_material TEXT,
-                activities TEXT,
-                equipments TEXT,
-                city TEXT,
-                state TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        db.commit()
-        ensure_table_columns(db)
-        db.commit()
-
-@app.teardown_appcontext
-def close_db(error):
-    db = g.pop('db', None)
-    if db is not None:
-        try:
-            db.close()
+            BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+            arial = os.path.join(BASE_DIR, 'arial.ttf')
+            arialbd = os.path.join(BASE_DIR, 'arialbd.ttf')
+            if os.path.exists(arial):
+                pdfmetrics.registerFont(TTFont('Arial', arial))
+                self.FONT_REGULAR = 'Arial'
+                if os.path.exists(arialbd):
+                    pdfmetrics.registerFont(TTFont('Arial-Bold', arialbd))
+                    self.FONT_BOLD = 'Arial-Bold'
+                else:
+                    pdfmetrics.registerFont(TTFont('Arial-Bold', arial))
+                    self.FONT_BOLD = 'Arial-Bold'
         except Exception:
             pass
 
-# ---------------- utilitários de normalização ----------------
-def _pick_first(d: Dict[str, Any], keys: List[str], default=''):
-    for k in keys:
-        if k in d and d[k] is not None:
-            return d[k]
-    return default
-
-def _sanitize_description(descricao: str, origem: str, destino: str, motivo: str, tipo: str) -> str:
-    if not descricao:
-        descricao = ''
-    s = descricao.strip()
-    for piece in [origem, destino, motivo]:
-        if piece:
-            try:
-                s = s.replace(piece, '')
-            except Exception:
-                pass
-    s = ' '.join(s.split())
-    return s
-
-def normalize_activity(raw: Dict[str, Any]) -> Dict[str, Any]:
-    a = {}
-    a['DATA'] = _pick_first(raw, ['DATA', 'data', 'Data']) or ''
-    hora_legacy = _pick_first(raw, ['HORA', 'hora', 'Hora']) or ''
-    a['HORA'] = hora_legacy or ''
-    h_inicio = _pick_first(raw, ['HORA_INICIO', 'hora_inicio', 'horaInicio', 'HORAINICIO']) or ''
-    h_fim = _pick_first(raw, ['HORA_FIM', 'hora_fim', 'horaFim']) or ''
-    a['HORA_INICIO'] = h_inicio or ''
-    a['HORA_FIM'] = h_fim or ''
-
-    if (not a['HORA_INICIO'] or not a['HORA_FIM']) and isinstance(hora_legacy, str) and hora_legacy.strip():
-        s = hora_legacy.strip()
-        if 'às' in s:
-            parts = [p.strip() for p in s.split('às', 1)]
-            if not a['HORA_INICIO'] and parts[0]:
-                a['HORA_INICIO'] = parts[0]
-            if not a['HORA_FIM'] and len(parts) > 1 and parts[1]:
-                a['HORA_FIM'] = parts[1]
-        else:
-            if not a['HORA_INICIO']:
-                a['HORA_INICIO'] = s
-
-    a['TIPO'] = _pick_first(raw, ['TIPO', 'tipo']) or ''
-    a['KM'] = str(_pick_first(raw, ['KM', 'km']) or '')
-    a['DESCRICAO'] = _pick_first(raw, ['DESCRICAO', 'descricao', 'Descricao', 'description']) or ''
-    a['TECNICO1'] = _pick_first(raw, ['TECNICO1', 'tecnico1', 'tecnico_1']) or ''
-    a['TECNICO2'] = _pick_first(raw, ['TECNICO2', 'tecnico2', 'tecnico_2']) or ''
-    a['MOTIVO'] = _pick_first(raw, ['MOTIVO', 'motivo']) or ''
-    a['ORIGEM'] = _pick_first(raw, ['ORIGEM', 'origem']) or ''
-    a['DESTINO'] = _pick_first(raw, ['DESTINO', 'destino']) or ''
-
-    a['DESCRICAO'] = _sanitize_description(a['DESCRICAO'], a['ORIGEM'], a['DESTINO'], a['MOTIVO'], a['TIPO'])
-
-    km_blocked_raw = _pick_first(raw, ['KM_BLOQUEADO', 'km_bloqueado', 'KM_BLOCKED', 'kmBlocked', 'blocked_km', 'KMBLOCKED']) or False
-    if isinstance(km_blocked_raw, str):
-        km_blocked = km_blocked_raw.strip().lower() in ('1', 'true', 't', 'yes', 'on')
-    elif isinstance(km_blocked_raw, (int, float)):
-        km_blocked = bool(km_blocked_raw)
-    elif isinstance(km_blocked_raw, bool):
-        km_blocked = km_blocked_raw
-    else:
-        km_blocked = False
-    a['KM_BLOQUEADO'] = km_blocked
-
-    return a
-
-def normalize_equipments(raw_e) -> List[Dict[str, Any]]:
-    if raw_e is None:
-        return []
-    parsed = []
-    if isinstance(raw_e, str):
+    # -------------------------------
+    # Sanitização para Paragraphs
+    # -------------------------------
+    def sanitize_for_paragraph(self, text):
         try:
-            parsed = json.loads(raw_e)
+            if text is None:
+                return ''
+            txt = str(text)
+            txt = txt.replace('\r\n', '\n').replace('\r', '\n')
+            escaped = xml_escape(txt)
+            safe = escaped.replace('\n', '<br/>')
+            return safe
         except Exception:
-            parsed = []
-    elif isinstance(raw_e, (list, tuple)):
-        parsed = list(raw_e)
-    else:
-        parsed = []
-
-    out = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        eq = {}
-        eq['equipamento'] = _pick_first(item, ['equipamento', 'EQUIPAMENTO', 'equipment', 'name']) or ''
-        eq['fabricante'] = _pick_first(item, ['fabricante', 'FABRICANTE', 'manufacturer']) or ''
-        eq['modelo'] = _pick_first(item, ['modelo', 'MODELO', 'model']) or ''
-        eq['numero_serie'] = _pick_first(item, ['numero_serie', 'NUMERO_SERIE', 'serial_number', 'sn']) or ''
-        out.append(eq)
-    return out
-
-def normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(payload, dict):
-        return payload
-
-    normalized: Dict[str, Any] = {}
-    mapping = {
-        'user_id': 'user_id',
-        'user': 'user_id',
-        'client': 'CLIENTE',
-        'ship': 'NAVIO',
-        'contact': 'CONTATO',
-        'work': 'OBRA',
-        'location': 'LOCAL',
-        'os_number': 'OS',
-        'os': 'OS',
-        'equipment': 'EQUIPAMENTO',
-        'manufacturer': 'FABRICANTE',
-        'model': 'MODELO',
-        'serial_number': 'NUMERO_SERIE',
-        'reported_problem': 'PROBLEMA_RELATADO',
-        'service_performed': 'SERVICO_REALIZADO',
-        'result': 'RESULTADO',
-        'pending_issues': 'PENDENCIAS',
-        'client_material': 'MATERIAL_CLIENTE',
-        'pronav_material': 'MATERIAL_PRONAV',
-        'cidade': 'CIDADE',
-        'estado': 'ESTADO'
-    }
-
-    normalized['user_id'] = payload.get('user_id') or payload.get('user') or payload.get('USER_ID') or 'anonymous_user'
-
-    for src, dst in mapping.items():
-        if dst == 'user_id':
-            continue
-        if src in payload and payload.get(src) is not None:
-            normalized[dst] = payload[src]
-        elif dst in payload and payload.get(dst) is not None:
-            normalized[dst] = payload[dst]
-
-    top_keys = ['CLIENTE','NAVIO','CONTATO','OBRA','LOCAL','OS','EQUIPAMENTO','FABRICANTE','MODELO','NUMERO_SERIE','PROBLEMA_RELATADO','SERVICO_REALIZADO','RESULTADO','PENDENCIAS','MATERIAL_CLIENTE','MATERIAL_PRONAV','CIDADE','ESTADO']
-    for k in top_keys:
-        if k not in normalized:
-            normalized[k] = payload.get(k.lower(), payload.get(k.capitalize(), '')) or ''
-
-    acts_raw = payload.get('activities') or payload.get('Activities') or payload.get('ativities') or payload.get('atividades')
-    activities_list = []
-    if acts_raw is None:
-        activities_list = []
-    else:
-        parsed = []
-        if isinstance(acts_raw, str):
             try:
-                parsed = json.loads(acts_raw)
+                return xml_escape(str(text or '')).replace('\n', '<br/>')
             except Exception:
-                parsed = []
-        elif isinstance(acts_raw, (list, tuple)):
-            parsed = acts_raw
-        else:
-            if isinstance(acts_raw, (bytes, bytearray)):
-                try:
-                    parsed = json.loads(acts_raw.decode('utf-8'))
-                except Exception:
-                    parsed = []
-            else:
-                parsed = []
+                return ''
 
-        if isinstance(parsed, list):
-            for a in parsed:
-                if isinstance(a, dict):
-                    activities_list.append(normalize_activity(a))
-                else:
-                    activities_list.append({})
-        else:
-            activities_list = []
-
-    normalized['activities'] = activities_list
-
-    eqs_raw = payload.get('EQUIPAMENTOS') or payload.get('equipamentos') or payload.get('EQUIPMENTS')
-    normalized['EQUIPAMENTOS'] = normalize_equipments(eqs_raw)
-
-    if not normalized['EQUIPAMENTOS']:
-        first_eq = {
-            'equipamento': normalized.get('EQUIPAMENTO') or payload.get('equipment') or '',
-            'fabricante': normalized.get('FABRICANTE') or payload.get('fabricante') or '',
-            'modelo': normalized.get('MODELO') or payload.get('model') or '',
-            'numero_serie': normalized.get('NUMERO_SERIE') or payload.get('serial_number') or ''
-        }
-        if any(first_eq.values()):
-            normalized['EQUIPAMENTOS'] = [first_eq]
-
-    if 'report_id' in payload:
-        normalized['report_id'] = payload['report_id']
-    elif 'id' in payload:
-        normalized['report_id'] = payload['id']
-
-    for k, v in payload.items():
-        if k not in normalized and k not in mapping:
-            normalized[k] = v
-
-    return normalized
-
-def map_db_row_to_api(row: sqlite3.Row) -> Dict[str, Any]:
-    d = dict(row)
-    if 'id' in d:
-        d['report_id'] = d['id']
-
-    if 'activities' in d and d.get('activities') is not None:
-        raw_val = d.get('activities')
-        parsed = []
-        if isinstance(raw_val, str):
-            try:
-                parsed = json.loads(raw_val)
-            except Exception:
-                parsed = []
-        elif isinstance(raw_val, list):
-            parsed = raw_val
-        else:
-            try:
-                if isinstance(raw_val, (bytes, bytearray)):
-                    parsed = json.loads(raw_val.decode('utf-8'))
-                else:
-                    parsed = []
-            except Exception:
-                parsed = []
-        d['activities'] = parsed
-
-    if 'equipments' in d and d.get('equipments') is not None:
-        raw_val = d.get('equipments')
-        parsed = []
-        if isinstance(raw_val, str):
-            try:
-                parsed = json.loads(raw_val)
-            except Exception:
-                parsed = []
-        elif isinstance(raw_val, list):
-            parsed = raw_val
-        else:
-            try:
-                if isinstance(raw_val, (bytes, bytearray)):
-                    parsed = json.loads(raw_val.decode('utf-8'))
-                else:
-                    parsed = []
-            except Exception:
-                parsed = []
-        d['EQUIPAMENTOS'] = parsed
-
-    alias_map = {
-        'client': 'CLIENTE',
-        'ship': 'NAVIO',
-        'contact': 'CONTATO',
-        'work': 'OBRA',
-        'location': 'LOCAL',
-        'os_number': 'OS',
-        'equipment': 'EQUIPAMENTO',
-        'manufacturer': 'FABRICANTE',
-        'model': 'MODELO',
-        'serial_number': 'NUMERO_SERIE',
-        'reported_problem': 'PROBLEMA_RELATADO',
-        'service_performed': 'SERVICO_REALIZADO',
-        'result': 'RESULTADO',
-        'pending_issues': 'PENDENCIAS',
-        'client_material': 'MATERIAL_CLIENTE',
-        'pronav_material': 'MATERIAL_PRONAV',
-        'city': 'CIDADE',
-        'state': 'ESTADO'
-    }
-    for low, up in alias_map.items():
-        if low in d and (up not in d or d.get(up) is None):
-            d[up] = d.get(low)
-
-    loc = d.get('LOCAL', '') or ''
-    city = d.get('CIDADE', '') or ''
-    state = d.get('ESTADO', '') or ''
-    composed = ' - '.join([p for p in [loc.strip(), city.strip(), state.strip()] if p])
-    if composed:
-        d['LOCAL'] = composed
-
-    return d
-
-# ---------------- Error handler decorator ----------------
-def handle_errors(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        try:
-            return f(*args, **kwargs)
-        except ValidationError as e:
-            logger.warning("Validation error: %s", e)
-            try:
-                details = e.errors()
-            except Exception:
-                details = str(e)
-            try:
-                return jsonify({'error': 'Dados inválidos', 'details': details}), 400
-            except TypeError:
-                return jsonify({'error': 'Dados inválidos', 'details': str(details)}), 400
-        except FileNotFoundError as e:
-            logger.error("Arquivo não encontrado: %s", e)
-            return jsonify({'error': 'Arquivo necessário não encontrado', 'msg': str(e)}), 404
-        except sqlite3.Error as e:
-            logger.error("DB error: %s", e)
-            return jsonify({'error': 'Erro interno do banco de dados', 'msg': str(e)}), 500
-        except requests.RequestException as e:
-            logger.error("Request error: %s", e)
-            return jsonify({'error': 'Erro ao acessar recursos externos', 'msg': str(e)}), 502
-        except Exception as e:
-            logger.exception("Unexpected error")
-            return jsonify({'error': 'Erro interno do servidor', 'msg': str(e)}), 500
-    return decorated
-
-# ---------------- Helpers for PDF formatting ----------------
-def format_date_br(raw: str) -> str:
-    if not raw:
-        return ''
-    raw = str(raw).strip()
-    try:
-        d = date_parser.parse(raw, dayfirst=True, fuzzy=True)
-        return d.strftime('%d/%m/%Y')
-    except Exception:
-        try:
-            if len(raw) >= 10 and raw[4] == '-' and raw[7] == '-':
-                y, m, day = raw[:10].split('-')
-                return f"{int(day):02d}/{int(m):02d}/{int(y):04d}"
-        except Exception:
-            pass
-    return raw
-
-def ensure_upper_safe(s):
-    try:
-        return str(s or '').upper()
-    except Exception:
-        return str(s or '')
-
-# ---------------- Endpoints ----------------
-@app.route('/')
-def index():
-    try:
-        return render_template('index.html')
-    except Exception:
-        return "PRONAV Report Service"
-
-@app.route('/salvar-rascunho', methods=['POST'])
-@handle_errors
-def salvar_rascunho():
-    payload = request.get_json()
-    if not payload:
-        return jsonify({'error': 'Payload JSON inválido ou ausente'}), 400
-
-    norm = normalize_payload(payload)
-    report_request = ReportRequest(**norm)
-    atividades_list = [a.model_dump() for a in report_request.activities]
-    equipments_list = report_request.EQUIPAMENTOS or []
-
-    now_iso = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-
-    with db_connection() as db:
-        cur = db.execute('''
-            INSERT INTO reports (
-                user_id, client, ship, contact, work, location, os_number,
-                equipment, manufacturer, model, serial_number, reported_problem,
-                service_performed, result, pending_issues, client_material,
-                pronav_material, activities, equipments, city, state, created_at, updated_at, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', [
-            report_request.user_id,
-            report_request.CLIENTE,
-            report_request.NAVIO,
-            report_request.CONTATO,
-            report_request.OBRA,
-            report_request.LOCAL,
-            report_request.OS,
-            report_request.EQUIPAMENTO,
-            report_request.FABRICANTE,
-            report_request.MODELO,
-            report_request.NUMERO_SERIE,
-            report_request.PROBLEMA_RELATADO,
-            report_request.SERVICO_REALIZADO,
-            report_request.RESULTADO,
-            report_request.PENDENCIAS,
-            report_request.MATERIAL_CLIENTE,
-            report_request.MATERIAL_PRONAV,
-            json.dumps(atividades_list, ensure_ascii=False),
-            json.dumps(equipments_list, ensure_ascii=False),
-            report_request.CIDADE or '',
-            report_request.ESTADO or '',
-            now_iso,
-            now_iso,
-            'draft'
-        ])
-        db.commit()
-        report_id = cur.lastrowid
-    return jsonify({'message': 'Rascunho salvo', 'report_id': report_id}), 201
-
-@app.route('/relatorios-salvos', methods=['GET'])
-@handle_errors
-def relatorios_salvos():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({'error': 'user_id é obrigatório na query string'}), 400
-    with db_connection() as db:
-        rows = db.execute('SELECT id, client, ship, status, created_at, updated_at FROM reports WHERE user_id = ? ORDER BY COALESCE(updated_at, created_at) DESC', [user_id]).fetchall()
-        result = []
-        for r in rows:
-            mapped = dict(r)
-            mapped['CLIENTE'] = mapped.get('client')
-            mapped['NAVIO'] = mapped.get('ship')
-            result.append(mapped)
-    return jsonify(result)
-
-@app.route('/relatorio/<int:report_id>', methods=['GET'])
-@handle_errors
-def get_report(report_id):
-    with db_connection() as db:
-        row = db.execute('SELECT * FROM reports WHERE id = ?', [report_id]).fetchone()
-        if not row:
-            return jsonify({'error': 'Relatório não encontrado'}), 404
-        data = map_db_row_to_api(row)
-    return jsonify(data)
-
-@app.route('/atualizar-relatorio/<int:report_id>', methods=['PUT'])
-@handle_errors
-def atualizar_relatorio(report_id):
-    payload = request.get_json()
-    if not payload:
-        return jsonify({'error': 'Payload JSON inválido ou ausente'}), 400
-
-    norm = normalize_payload(payload)
-    report_request = ReportRequest(**norm)
-    atividades_list = [a.model_dump() for a in report_request.activities]
-    equipments_list = report_request.EQUIPAMENTOS or []
-
-    now_iso = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-
-    with db_connection() as db:
-        cur = db.execute('''
-            UPDATE reports SET
-                client=?, ship=?, contact=?, work=?, location=?, os_number=?,
-                equipment=?, manufacturer=?, model=?, serial_number=?,
-                reported_problem=?, service_performed=?, result=?, pending_issues=?,
-                client_material=?, pronav_material=?, activities=?, equipments=?, city=?, state=?, updated_at=?, status='draft'
-            WHERE id=?
-        ''', [
-            report_request.CLIENTE,
-            report_request.NAVIO,
-            report_request.CONTATO,
-            report_request.OBRA,
-            report_request.LOCAL,
-            report_request.OS,
-            report_request.EQUIPAMENTO,
-            report_request.FABRICANTE,
-            report_request.MODELO,
-            report_request.NUMERO_SERIE,
-            report_request.PROBLEMA_RELATADO,
-            report_request.SERVICO_REALIZADO,
-            report_request.RESULTADO,
-            report_request.PENDENCIAS,
-            report_request.MATERIAL_CLIENTE,
-            report_request.MATERIAL_PRONAV,
-            json.dumps(atividades_list, ensure_ascii=False),
-            json.dumps(equipments_list, ensure_ascii=False),
-            report_request.CIDADE or '',
-            report_request.ESTADO or '',
-            now_iso,
-            report_id
-        ])
-        db.commit()
-        if cur.rowcount == 0:
-            return jsonify({'error': 'Relatório não encontrado'}), 404
-    return jsonify({'message': 'Relatório atualizado'}), 200
-
-@app.route('/relatorio/<int:report_id>', methods=['DELETE'])
-@handle_errors
-def delete_report(report_id):
-    with db_connection() as db:
-        cur = db.execute('DELETE FROM reports WHERE id = ?', [report_id])
-        db.commit()
-        if cur.rowcount == 0:
-            return jsonify({'error': 'Relatório não encontrado'}), 404
-    return jsonify({'message': 'Relatório removido'}), 200
-
-@app.route('/gerar-relatorio', methods=['POST'])
-@handle_errors
-def gerar_relatorio():
-    form_data = request.get_json()
-    if not form_data:
-        return jsonify({'error': 'Payload JSON inválido ou ausente'}), 400
-
-    norm = normalize_payload(form_data)
-    report_id = norm.get('report_id') or form_data.get('report_id')
-
-    report_request = ReportRequest(**norm)
-    atividades_list = [a.model_dump() for a in report_request.activities]
-    equipments_list = report_request.EQUIPAMENTOS or []
-
-    now_iso = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-
-    with db_connection() as db:
-        if report_id:
-            cur = db.execute('''
-                UPDATE reports SET
-                    client=?, ship=?, contact=?, work=?, location=?, os_number=?,
-                    equipment=?, manufacturer=?, model=?, serial_number=?,
-                    reported_problem=?, service_performed=?, result=?, pending_issues=?,
-                    client_material=?, pronav_material=?, activities=?, equipments=?, city=?, state=?, updated_at=?, status='final'
-                WHERE id=?
-            ''', [
-                report_request.CLIENTE,
-                report_request.NAVIO,
-                report_request.CONTATO,
-                report_request.OBRA,
-                report_request.LOCAL,
-                report_request.OS,
-                report_request.EQUIPAMENTO,
-                report_request.FABRICANTE,
-                report_request.MODELO,
-                report_request.NUMERO_SERIE,
-                report_request.PROBLEMA_RELATADO,
-                report_request.SERVICO_REALIZADO,
-                report_request.RESULTADO,
-                report_request.PENDENCIAS,
-                report_request.MATERIAL_CLIENTE,
-                report_request.MATERIAL_PRONAV,
-                json.dumps(atividades_list, ensure_ascii=False),
-                json.dumps(equipments_list, ensure_ascii=False),
-                report_request.CIDADE or '',
-                report_request.ESTADO or '',
-                now_iso,
-                report_id
-            ])
-            if cur.rowcount == 0:
-                return jsonify({'error': 'Relatório para atualizar não encontrado'}), 404
-            db.commit()
-            saved_report_id = report_id
-        else:
-            cur = db.execute('''
-                INSERT INTO reports (
-                    user_id, client, ship, contact, work, location, os_number,
-                    equipment, manufacturer, model, serial_number, reported_problem,
-                    service_performed, result, pending_issues, client_material,
-                    pronav_material, activities, equipments, city, state, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', [
-                report_request.user_id,
-                report_request.CLIENTE,
-                report_request.NAVIO,
-                report_request.CONTATO,
-                report_request.OBRA,
-                report_request.LOCAL,
-                report_request.OS,
-                report_request.EQUIPAMENTO,
-                report_request.FABRICANTE,
-                report_request.MODELO,
-                report_request.NUMERO_SERIE,
-                report_request.PROBLEMA_RELATADO,
-                report_request.SERVICO_REALIZADO,
-                report_request.RESULTADO,
-                report_request.PENDENCIAS,
-                report_request.MATERIAL_CLIENTE,
-                report_request.MATERIAL_PRONAV,
-                json.dumps(atividades_list, ensure_ascii=False),
-                json.dumps(equipments_list, ensure_ascii=False),
-                report_request.CIDADE or '',
-                report_request.ESTADO or '',
-                'final',
-                now_iso,
-                now_iso
-            ])
-            db.commit()
-            saved_report_id = cur.lastrowid
-
-    # --- PDF parameters (base values) ---
-    pdf_buffer = io.BytesIO()
-    PAGE_SIZE = letter
-    PAGE_W, PAGE_H = PAGE_SIZE
-
-    # margins - we'll allow reduction if necessary
-    MARG = 0.35 * inch  # left/right fixed
-    preserved_top_margin_base = 0.25 * inch
-    preserved_bottom_margin_base = 0.12 * inch
-
-    square_side = 1.18 * inch
-    header_row0 = 0.22 * inch
-    header_row = 0.26 * inch
-    header_height_base = header_row0 + header_row * 3
-
-    sig_header_h_base = 0.24 * inch
-    sig_area_h_base = 0.6 * inch
-    footer_h_base = 0.28 * inch
-    footer_total_height_base = footer_h_base + sig_header_h_base + sig_area_h_base
-
-    # We will attempt to find the largest scale in [min_scale, 1.0] that fits into the page content area.
-    MIN_SCALE = 0.40
-    MAX_SCALE = 1.0
-    # Allow reducing margins progressively (50% to 100% of base)
-    margin_reduction_factors = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]
-
-    # helper: style & story builders (must be deterministic and not depend on doc)
-    def make_styles(scale=1.0):
-        title_sz = max(6.0, BASE_TITLE_FONT_SIZE * scale)
-        label_sz = max(6.0, BASE_LABEL_FONT_SIZE * scale)
-        value_sz = max(6.0, BASE_VALUE_FONT_SIZE * scale)
-        pad_small = max(1, int(max(1, SMALL_PAD * scale)))
-        pad_med = max(1, int(max(1, MED_PAD * scale)))
-        styles = getSampleStyleSheet()
-        styles.add(ParagraphStyle(name='TitleCenter', fontName=FONT_BOLD, fontSize=title_sz, alignment=1, leading=max(8, title_sz*1.15)))
-        styles.add(ParagraphStyle(name='HeaderLabelPrefill', fontName=FONT_BOLD, fontSize=label_sz, leading=max(7, label_sz*1.15)))
-        styles.add(ParagraphStyle(name='HeaderValueFill', fontName=FONT_REGULAR, fontSize=max(5, value_sz-1), leading=max(7, value_sz*1.15)))
-        styles.add(ParagraphStyle(name='BodyLabelPrefill', fontName=FONT_BOLD, fontSize=label_sz, leading=max(8, label_sz*1.15)))
-        styles.add(ParagraphStyle(name='BodyValueFill', fontName=FONT_REGULAR, fontSize=value_sz, leading=max(9, value_sz*1.15)))
-        styles.add(ParagraphStyle(name='td', fontName=FONT_REGULAR, fontSize=value_sz, leading=max(9, value_sz*1.15)))
-        styles.add(ParagraphStyle(name='td_left', fontName=FONT_REGULAR, fontSize=value_sz, alignment=0, leading=max(9, value_sz*1.15)))
-        styles.add(ParagraphStyle(name='td_right', fontName=FONT_REGULAR, fontSize=value_sz, alignment=2, leading=max(9, value_sz*1.15)))
-        styles.add(ParagraphStyle(name='sec_title', fontName=FONT_BOLD, fontSize=label_sz, alignment=0, leading=max(8, label_sz*1.15)))
-
-        # New: style specifically for the "SERVIÇO REALIZADO" section.
-        # It uses SERVICE_VALUE_MULTIPLIER to increase font size for this field.
-        try:
-            mult = float(SERVICE_VALUE_MULTIPLIER)
-        except Exception:
-            mult = 1.25
-        larger_value_sz = max(value_sz, int(value_sz * mult))
-        # enforce a minimum readable font for this special field
-        larger_value_sz = max(6.0, larger_value_sz)
-        styles.add(ParagraphStyle(name='section_value_large', fontName=FONT_REGULAR, fontSize=larger_value_sz, leading=max(9, larger_value_sz*1.15)))
-
-        return styles, pad_small, pad_med
-
-    def build_story(styles, pad_small, pad_med, usable_w):
-        story_local = []
-        story_local.append(Spacer(1, 0.01 * inch))
-
-        # Equipamento
-        first_eq = None
-        if equipments_list and len(equipments_list) > 0:
-            first_eq = equipments_list[0]
-        if not first_eq:
-            first_eq = {
-                'equipamento': report_request.EQUIPAMENTO or '',
-                'fabricante': report_request.FABRICANTE or '',
-                'modelo': report_request.MODELO or '',
-                'numero_serie': report_request.NUMERO_SERIE or ''
-            }
-
-        equip_col = usable_w / 4.0
-        equip_cols = [equip_col] * 4
-        equip_data = [
-            [Paragraph("EQUIPAMENTO", ParagraphStyle(name='eh', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-             Paragraph("FABRICANTE", ParagraphStyle(name='eh', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-             Paragraph("MODELO", ParagraphStyle(name='eh', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-             Paragraph("Nº DE SÉRIE", ParagraphStyle(name='eh', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1))],
-            [Paragraph(ensure_upper_safe(first_eq.get('equipamento') or ''), ParagraphStyle(name='ev', fontName=FONT_REGULAR, fontSize=styles['td'].fontSize)),
-             Paragraph(ensure_upper_safe(first_eq.get('fabricante') or ''), ParagraphStyle(name='ev', fontName=FONT_REGULAR, fontSize=styles['td'].fontSize)),
-             Paragraph(ensure_upper_safe(first_eq.get('modelo') or ''), ParagraphStyle(name='ev', fontName=FONT_REGULAR, fontSize=styles['td'].fontSize)),
-             Paragraph(ensure_upper_safe(first_eq.get('numero_serie') or ''), ParagraphStyle(name='ev', fontName=FONT_REGULAR, fontSize=styles['td'].fontSize))],
-        ]
-        equip_table = Table(equip_data, colWidths=equip_cols, rowHeights=[0.28*inch, 0.2*inch])
-        equip_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), GRAY),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.black),
-            ('ALIGN', (0,0), (-1,0), 'CENTER'),
-            ('BOX', (0,0), (-1,-1), LINE_WIDTH, colors.black),
-            ('INNERGRID', (0,0), (-1,-1), LINE_WIDTH, colors.black),
-            ('LEFTPADDING', (0,0), (-1,0), pad_small),
-            ('RIGHTPADDING', (0,0), (-1,0), pad_small),
-            ('TOPPADDING', (0,0), (-1,0), 0.5),
-            ('BOTTOMPADDING', (0,0), (-1,0), 0.5),
-            ('LEFTPADDING', (0,1), (-1,1), pad_med),
-            ('RIGHTPADDING', (0,1), (-1,1), pad_med),
-            ('TOPPADDING', (0,1), (-1,1), 0.5),
-            ('BOTTOMPADDING', (0,1), (-1,1), 0.5),
-        ]))
-        story_local.append(KeepTogether([equip_table]))
-        story_local.append(Spacer(1, 0.12 * inch))
-
-        # Sections
-        sections = [
-            ("PROBLEMA RELATADO/ENCONTRADO", report_request.PROBLEMA_RELATADO),
-            ("SERVIÇO REALIZADO", report_request.SERVICO_REALIZADO),
-            ("RESULTADO", report_request.RESULTADO),
-            ("PENDÊNCIAS", report_request.PENDENCIAS),
-            ("MATERIAL FORNECIDO PELO CLIENTE", report_request.MATERIAL_CLIENTE),
-            ("MATERIAL FORNECIDO PELA PRONAV", report_request.MATERIAL_PRONAV),
-        ]
-        for idx, (title, content) in enumerate(sections, start=1):
-            title_tbl = Table([[Paragraph(f"{idx}. {title}", styles['sec_title'])]], colWidths=[usable_w])
-            title_tbl.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,-1), GRAY),
-                ('BOX', (0,0), (-1,-1), LINE_WIDTH, colors.black),
-                ('LEFTPADDING', (0,0), (-1,-1), pad_small),
-                ('RIGHTPADDING', (0,0), (-1,-1), pad_small),
-                ('TOPPADDING', (0,0), (-1,-1), 1),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 1),
-            ]))
-
-            safe_content = (str(content or '')).replace('\r\n', '\n').replace('\r', '\n')
-            safe_content = safe_content.replace('\n', '<br/>')
-
-            # Use larger style only for "SERVIÇO REALIZADO"
-            if title.strip().upper().startswith("SERVIÇO REALIZADO"):
-                # ensure style exists
-                style_for_content = styles.get('section_value_large', styles['td'])
-                content_par = Paragraph(safe_content, style_for_content)
-            else:
-                content_par = Paragraph(safe_content, styles['td'])
-
-            content_tbl = Table([[content_par]], colWidths=[usable_w])
-            content_tbl.setStyle(TableStyle([
-                ('BOX', (0,0), (-1,-1), LINE_WIDTH, colors.black),
-                ('LEFTPADDING', (0,0), (-1,-1), pad_med),
-                ('RIGHTPADDING', (0,0), (-1,-1), pad_med),
-                ('TOPPADDING', (0,0), (-1,-1), 1),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 1),
-            ]))
-
-            story_local.append(KeepTogether([title_tbl, content_tbl]))
-            story_local.append(Spacer(1, 0.12 * inch))
-
-        # Activities table
-        if atividades_list:
-            proportions = [0.12, 0.12, 0.14, 0.34, 0.06, 0.11, 0.11]
-            col_widths = [p * usable_w for p in proportions]
-
-            delta_desc_pts = 20.0
-            delta_tec_pts = 10.0
-            delta_desc = (delta_desc_pts / 72.0) * inch
-            delta_tec = (delta_tec_pts / 72.0) * inch
-
-            idx_desc = 3
-            idx_tec1 = 5
-            idx_tec2 = 6
-
-            col_widths[idx_desc] = max(0.08 * usable_w, col_widths[idx_desc] - delta_desc)
-            col_widths[idx_tec1] = col_widths[idx_tec1] + delta_tec
-            col_widths[idx_tec2] = col_widths[idx_tec2] + delta_tec
-
-            total = sum(col_widths)
-            diff = total - usable_w
-            if abs(diff) > 0.1:
-                preferred = 2
-                min_allowed = 0.06 * usable_w
-                new_val = col_widths[preferred] - diff
-                if new_val < min_allowed:
-                    remaining = diff - (col_widths[preferred] - min_allowed)
-                    col_widths[preferred] = min_allowed
-                    col_widths[0] = max(0.06 * usable_w, col_widths[0] - remaining)
-                else:
-                    col_widths[preferred] = new_val
-
-            header_cells = [
-                Paragraph("DATA", ParagraphStyle(name='th', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                Paragraph("HORA", ParagraphStyle(name='th', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                Paragraph("TIPO", ParagraphStyle(name='th', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                Paragraph("DESCRIÇÃO", ParagraphStyle(name='th', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                Paragraph("KM", ParagraphStyle(name='th', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                Paragraph("TÉCNICOS", ParagraphStyle(name='th', fontName=FONT_BOLD, fontSize=styles['sec_title'].fontSize, alignment=1)),
-                ''
-            ]
-            data = [header_cells]
-
-            for at in atividades_list:
-                hi = (at.get('HORA_INICIO') or '') or ''
-                hf = (at.get('HORA_FIM') or '') or ''
-                legacy = (at.get('HORA') or '') or ''
-                if hi and hf:
-                    hora_comb = f"{str(hi)} às {str(hf)}"
-                elif hi:
-                    hora_comb = str(hi)
-                elif legacy:
-                    hora_comb = str(legacy)
-                else:
-                    hora_comb = ''
-
-                data_br = format_date_br(at.get('DATA') or '')
-
-                safe_desc = ensure_upper_safe(at.get('DESCRICAO') or '')
-
-                data.append([
-                    Paragraph(str(data_br or ''), styles['td']),
-                    Paragraph(hora_comb, styles['td']),
-                    Paragraph(str(at.get('TIPO') or ''), styles['td']),
-                    Paragraph(safe_desc, styles['td']),
-                    Paragraph(str(at.get('KM') or ''), styles['td']),
-                    Paragraph(str(at.get('TECNICO1') or ''), styles['td_left']),
-                    Paragraph(str(at.get('TECNICO2') or ''), styles['td_left']),
-                ])
-
-            activities_table = Table(data, colWidths=col_widths, repeatRows=1)
-            activities_table.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), GRAY),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.black),
-                ('ALIGN', (0,0), (-1,0), 'CENTER'),
-                ('BOX', (0,0), (-1,-1), LINE_WIDTH, colors.black),
-                ('GRID', (0,0), (-1,-1), LINE_WIDTH, colors.black),
-                ('LEFTPADDING', (0,0), (-1,-1), 4),
-                ('RIGHTPADDING', (0,0), (-1,-1), 4),
-                ('TOPPADDING', (0,0), (-1,-1), 2),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-                ('ALIGN', (5,1), (6,-1), 'LEFT'),
-                ('VALIGN', (0,0), (-1,0), 'MIDDLE'),
-                ('VALIGN', (0,1), (-1,-1), 'MIDDLE'),
-            ]))
-            story_local.append(activities_table)
-
-        return story_local
-
-    def estimate_height(flowables, avail_width):
+    # -------------------------------
+    # Estimador de altura (simples)
+    # -------------------------------
+    def estimate_height(self, flowables, avail_width, avail_height):
         h = 0.0
+        from reportlab.platypus import Spacer as _Spacer
         for f in flowables:
             try:
-                from reportlab.platypus import Spacer as _Spacer
                 if isinstance(f, _Spacer):
                     h += f.height
                     continue
-                w, fh = f.wrap(avail_width, PAGE_H)
+                w, fh = f.wrap(avail_width, avail_height)
                 h += fh
             except Exception:
-                h += 12
+                h += 10
         return h
 
-    # --- Attempt to find best scale and margin reduction to fit in first page ---
-    best_found = {
-        'fit': False,
-        'scale': 1.0,
-        'top_margin': preserved_top_margin_base,
-        'bottom_margin': preserved_bottom_margin_base,
-        'usable_w': PAGE_W - 2 * MARG,
-        'frame_height': 0.0,
-        'story': None,
-        'styles': None,
-        'pad_small': None,
-        'pad_med': None
-    }
+    # -------------------------------
+    # Geração do PDF
+    # -------------------------------
+    def generate_pdf(self, report_request, atividades_list, equipments_list, saved_report_id):
+        pdf_buffer = io.BytesIO()
+        PAGE_SIZE = letter
+        PAGE_W, PAGE_H = PAGE_SIZE
 
-    original_usable_w = PAGE_W - 2 * MARG
+        # margins
+        MARG = 0.35 * inch  # left/right fixed
+        preserved_top_margin_base = 0.25 * inch
+        preserved_bottom_margin_base = 0.12 * inch
 
-    for m_factor in margin_reduction_factors:
-        preserved_top_margin = preserved_top_margin_base * m_factor
-        preserved_bottom_margin = preserved_bottom_margin_base * m_factor
+        square_side = 1.18 * inch
+        header_row0 = 0.22 * inch
+        header_row = 0.26 * inch
+        header_height_base = header_row0 + header_row * 3
 
-        # compute available content rectangle
-        usable_w = original_usable_w  # left/right margins fixed
-        frame_top = PAGE_H - preserved_top_margin - header_height_base
-        frame_bottom = preserved_bottom_margin + footer_total_height_base
-        frame_height = frame_top - frame_bottom
-        if frame_height <= 0:
-            continue
+        sig_header_h_base = 0.24 * inch
+        sig_area_h_base = 0.6 * inch
+        footer_h_base = 0.24 * inch  # leve aumento p/ legibilidade
+        footer_total_height_base = footer_h_base + sig_header_h_base + sig_area_h_base
 
-        # Binary search for largest scale in [MIN_SCALE, MAX_SCALE] that fits
-        lo = MIN_SCALE
-        hi = MAX_SCALE
-        found_scale = None
-        found_story = None
-        found_styles = None
-        found_pad_small = None
-        found_pad_med = None
+        # scaling bounds
+        MIN_SCALE = float(getattr(self.config, 'MIN_SCALE', 0.55))
+        MAX_SCALE = 1.0
+        margin_reduction_factors = [1.0, 0.9, 0.8, 0.7]
 
-        # Quick check: with scale=MAX_SCALE
-        styles_test, ps, pm = make_styles(scale=MAX_SCALE)
-        story_test = build_story(styles_test, ps, pm, usable_w)
-        req = estimate_height(story_test, usable_w)
-        if req <= frame_height:
-            found_scale = MAX_SCALE
-            found_story = story_test
-            found_styles = styles_test
-            found_pad_small = ps
-            found_pad_med = pm
-        else:
-            # binary search iterations
-            for _ in range(12):
-                mid = (lo + hi) / 2.0
-                styles_mid, ps_mid, pm_mid = make_styles(scale=mid)
-                story_mid = build_story(styles_mid, ps_mid, pm_mid, usable_w)
-                req_mid = estimate_height(story_mid, usable_w)
-                if req_mid <= frame_height:
-                    found_scale = mid
-                    found_story = story_mid
-                    found_styles = styles_mid
-                    found_pad_small = ps_mid
-                    found_pad_med = pm_mid
-                    # try larger
-                    lo = mid
+        # -------------------------------
+        # Helpers: normalization and logo finding
+        # -------------------------------
+        def _norm_text(cell):
+            try:
+                if hasattr(cell, 'getPlainText'):
+                    s = cell.getPlainText()
                 else:
-                    # too big, try smaller
-                    hi = mid
-                # stop early if hi-lo small
-                if (hi - lo) < 0.005:
-                    break
+                    s = str(cell or '')
+            except Exception:
+                s = str(cell or '')
+            s = unicodedata.normalize('NFKD', s)
+            s = ''.join(ch for ch in s if not unicodedata.category(ch).startswith('M'))
+            s = re.sub(r'\s+', ' ', s).strip()
+            s = s.strip(" " + string.punctuation)
+            return s.lower()
 
-        if found_scale is not None:
-            # store best if larger scale than previous found
-            if not best_found['fit'] or found_scale > best_found['scale']:
+        def find_logo_bytes(config_obj):
+            logo_val = getattr(config_obj, 'LOGO_PATH', None)
+            if isinstance(logo_val, (bytes, bytearray)):
+                try:
+                    return bytes(logo_val)
+                except Exception:
+                    pass
+            if logo_val and isinstance(logo_val, str):
+                p = Path(logo_val)
+                if not p.is_absolute():
+                    base = Path(__file__).resolve().parent
+                    p_try = (base / p).resolve()
+                    if p_try.exists():
+                        try:
+                            return p_try.read_bytes()
+                        except Exception:
+                            pass
+                try:
+                    if p.exists():
+                        return p.read_bytes()
+                except Exception:
+                    pass
+            base = Path(__file__).resolve().parent.parent
+            candidates = [
+                base / 'static' / 'images' / 'logo.png',
+                base / 'static' / 'logo.png',
+                Path.cwd() / 'static' / 'images' / 'logo.png',
+                Path.cwd() / 'static' / 'logo.png',
+                Path(__file__).resolve().parent / 'static' / 'images' / 'logo.png'
+            ]
+            for c in candidates:
+                try:
+                    if c.exists():
+                        return c.read_bytes()
+                except Exception:
+                    pass
+            try:
+                for pkg_name in (getattr(self, '__package__', None), 'pronav', None):
+                    try:
+                        if pkg_name:
+                            b = pkgutil.get_data(pkg_name, 'static/images/logo.png')
+                            if b:
+                                return b
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            return None
+
+        def make_styles(scale=1.0):
+            base_title = max(6.0, self.BASE_TITLE_FONT_SIZE * scale)
+            base_label = max(6.0, self.BASE_LABEL_FONT_SIZE * scale)
+            base_value = max(6.0, self.BASE_VALUE_FONT_SIZE * scale)
+
+            try:
+                resp_mult = float(getattr(self.config, 'RESPONSE_VALUE_MULTIPLIER', 1.0))
+            except Exception:
+                resp_mult = 1.0
+            try:
+                label_mult = float(getattr(self.config, 'LABEL_VALUE_MULTIPLIER', 1.05))
+            except Exception:
+                label_mult = 1.05
+
+            response_sz = max(6.0, float(base_value) * resp_mult)
+            label_sz = max(6.0, float(base_label) * label_mult)
+            title_sz = max(7.0, base_title * 1.0)
+
+            pad_small = max(1, int(max(1, self.SMALL_PAD * scale)))
+            pad_med = max(1, int(max(1, self.MED_PAD * scale)))
+
+            styles = getSampleStyleSheet()
+
+            styles.add(ParagraphStyle(
+                name='TitleCenter',
+                fontName=self.FONT_BOLD,
+                fontSize=title_sz,
+                alignment=1,
+                leading=max(8, title_sz * 1.15)
+            ))
+
+            styles.add(ParagraphStyle(
+                name='label',
+                fontName=self.FONT_BOLD,
+                fontSize=label_sz,
+                leading=max(7, label_sz * 1.05),
+                alignment=0,
+                spaceAfter=2,
+                spaceBefore=2
+            ))
+
+            styles.add(ParagraphStyle(
+                name='response',
+                fontName=self.FONT_REGULAR,
+                fontSize=response_sz,
+                leading=max(7, response_sz * 1.06),
+                alignment=0,
+                spaceAfter=0,
+                spaceBefore=0
+            ))
+
+            styles.add(ParagraphStyle(
+                name='label_center',
+                fontName=self.FONT_BOLD,
+                fontSize=label_sz,
+                leading=max(7, label_sz * 1.05),
+                alignment=1,
+                spaceAfter=2,
+                spaceBefore=2
+            ))
+
+            styles.add(ParagraphStyle(
+                name='response_center',
+                fontName=self.FONT_REGULAR,
+                fontSize=response_sz,
+                leading=max(7, response_sz * 1.06),
+                alignment=1,
+                spaceAfter=0,
+                spaceBefore=0
+            ))
+
+            styles.add(ParagraphStyle(name='td', fontName=self.FONT_REGULAR, fontSize=response_sz, leading=max(7, response_sz * 1.06), alignment=0, spaceBefore=0, spaceAfter=0))
+            styles.add(ParagraphStyle(name='td_left', fontName=self.FONT_REGULAR, fontSize=response_sz, alignment=0, leading=max(7, response_sz * 1.06), spaceBefore=0, spaceAfter=0))
+            styles.add(ParagraphStyle(name='td_right', fontName=self.FONT_REGULAR, fontSize=response_sz, alignment=0, leading=max(7, response_sz * 1.06), spaceBefore=0, spaceAfter=0))
+            styles.add(ParagraphStyle(name='sec_title', fontName=self.FONT_BOLD, fontSize=label_sz, alignment=0, leading=max(7, label_sz * 1.05), spaceAfter=2, spaceBefore=2))
+
+            try:
+                service_mult = float(getattr(self.config, 'SERVICE_VALUE_MULTIPLIER', 1.20))
+            except Exception:
+                service_mult = 1.20
+            svc_sz = max(response_sz, int(response_sz * service_mult))
+            svc_sz = max(6.0, svc_sz)
+            styles.add(ParagraphStyle(name='section_value_large', fontName=self.FONT_REGULAR, fontSize=svc_sz, leading=max(8, svc_sz * 1.06), alignment=0, spaceAfter=0, spaceBefore=0))
+
+            return styles, pad_small, pad_med
+
+        # constrói o story; frame_height opcional para detectar quebras e ajustar a primeira parte
+        def build_story(styles, pad_small, pad_med, usable_w, frame_height=None):
+            from copy import deepcopy
+            from reportlab.platypus import Paragraph, Table, Spacer
+
+            story_local = []
+            # reduzir o spacer inicial ao mínimo (mantendo o bloco perto do cabeçalho)
+            story_local.append(Spacer(1, 0.002 * inch))
+
+            def shrink_paragraph_to_fit(text, base_style, max_w, max_h, min_font=6):
+                txt = str(text or '')
+                base_text_for_try = self.sanitize_for_paragraph(txt)
+                for try_size in range(int(getattr(base_style, 'fontSize', 10)), min_font - 1, -1):
+                    tmp_style = deepcopy(base_style)
+                    tmp_style.fontSize = try_size
+                    tmp_style.leading = max(try_size * 1.04, (tmp_style.leading if hasattr(tmp_style, 'leading') else try_size * 1.06))
+                    p = Paragraph(base_text_for_try, tmp_style)
+                    try:
+                        w, h = p.wrap(max_w, max_h)
+                    except Exception:
+                        continue
+                    if h <= max_h:
+                        return p
+                tmp_style = deepcopy(base_style)
+                tmp_style.fontSize = min_font
+                tmp_style.leading = min_font * 1.04
+                return Paragraph(self.sanitize_for_paragraph(txt), tmp_style)
+
+            def _get(e, *keys):
+                if not isinstance(e, dict):
+                    return str(e or '')
+                for k in keys:
+                    if k in e and e[k] not in (None, ''):
+                        return e[k]
+                return ''
+
+            def split_text_into_chunks_for_row(text, style, max_w, max_row_h, min_chunk_chars=20):
+                out = []
+                remaining = str(text or '')
+                while remaining:
+                    try:
+                        p = Paragraph(self.sanitize_for_paragraph(remaining), style)
+                        w, h = p.wrap(max_w, max_row_h)
+                    except Exception:
+                        h = max_row_h + 1
+                    if h <= max_row_h:
+                        out.append(remaining)
+                        break
+                    lo = min_chunk_chars
+                    hi = len(remaining)
+                    best = None
+                    while lo <= hi:
+                        mid = (lo + hi) // 2
+                        cand = remaining[:mid].rstrip()
+                        try:
+                            cand_p = Paragraph(self.sanitize_for_paragraph(cand), style)
+                            w_c, h_c = cand_p.wrap(max_w, max_row_h)
+                        except Exception:
+                            h_c = max_row_h + 1
+                        if h_c <= max_row_h:
+                            best = mid
+                            lo = mid + 1
+                        else:
+                            hi = mid - 1
+                    if not best:
+                        best = max(1, min_chunk_chars)
+                    chunk = remaining[:best].rstrip()
+                    if ' ' in chunk:
+                        last_space = chunk.rfind(' ')
+                        if last_space >= int(best * 0.4):
+                            chunk = chunk[:last_space].rstrip()
+                    out.append(chunk)
+                    remaining = remaining[len(chunk):].lstrip()
+                    if len(out) > 500:
+                        out.append(remaining[:200] + '…')
+                        break
+                return out
+
+            # Equipamentos (compacto)
+            equipments = []
+            if equipments_list and len(equipments_list) > 0:
+                equipments = equipments_list
+            else:
+                equipments = [{
+                    'equipamento': report_request.EQUIPAMENTO or '',
+                    'fabricante': report_request.FABRICANTE or '',
+                    'modelo': report_request.MODELO or '',
+                    'numero_serie': report_request.NUMERO_SERIE or ''
+                }]
+
+            equip_data = [[
+                Paragraph("EQUIPAMENTO", styles['label_center']),
+                Paragraph("FABRICANTE", styles['label_center']),
+                Paragraph("MODELO", styles['label_center']),
+                Paragraph("Nº DE SÉRIE", styles['label_center'])
+            ]]
+
+            # para EQUIPAMENTO/FABRICANTE/MODELO/Nº DE SÉRIE mantemos proporção fixa: 4 colunas iguais
+            equip_col = usable_w / 4.0
+            equip_cols = [equip_col] * 4
+            header_h = 0.16 * inch
+            value_h = 0.14 * inch
+            inner_max_h = value_h - 1
+
+            equip_left_pad = max(1, pad_small)
+            equip_right_pad = max(1, pad_small)
+
+            for eq in equipments:
+                c0 = shrink_paragraph_to_fit(ensure_upper_safe(str(_get(eq, 'equipamento', 'EQUIPAMENTO') or '')),
+                                            styles['response'], equip_cols[0] - 2 * equip_left_pad, inner_max_h)
+                c1 = shrink_paragraph_to_fit(ensure_upper_safe(str(_get(eq, 'fabricante', 'FABRICANTE') or '')),
+                                            styles['response'], equip_cols[1] - 2 * equip_left_pad, inner_max_h)
+                c2 = shrink_paragraph_to_fit(ensure_upper_safe(str(_get(eq, 'modelo', 'MODELO') or '')),
+                                            styles['response'], equip_cols[2] - 2 * equip_left_pad, inner_max_h)
+                c3 = shrink_paragraph_to_fit(ensure_upper_safe(str(_get(eq, 'numero_serie', 'NUMERO_SERIE') or '')),
+                                            styles['response'], equip_cols[3] - 2 * equip_left_pad, inner_max_h)
+                equip_data.append([c0, c1, c2, c3])
+
+            row_heights = [header_h] + [value_h] * (len(equip_data) - 1)
+            equip_table = Table(equip_data, colWidths=equip_cols, rowHeights=row_heights, repeatRows=1)
+            equip_table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), self.GRAY),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.black),
+                ('ALIGN', (0,0), (-1,0), 'CENTER'),
+                ('ALIGN', (0,1), (-1,-1), 'LEFT'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('BOX', (0,0), (-1,-1), self.LINE_WIDTH, colors.black),
+                ('INNERGRID', (0,0), (-1,-1), self.LINE_WIDTH / 2.0, colors.black),
+                ('LEFTPADDING', (0,0), (-1,-1), equip_left_pad),
+                ('RIGHTPADDING', (0,0), (-1,-1), equip_right_pad),
+                ('TOPPADDING', (0,0), (-1,-1), 1),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+            ]))
+            story_local.append(equip_table)
+            story_local.append(Spacer(1, 0.04 * inch))
+
+            # Sections
+            sections = [
+                ("PROBLEMA RELATADO/ENCONTRADO", report_request.PROBLEMA_RELATADO),
+                ("SERVIÇO REALIZADO", report_request.SERVICO_REALIZADO),
+                ("RESULTADO", report_request.RESULTADO),
+                ("PENDÊNCIAS", report_request.PENDENCIAS),
+                ("MATERIAL FORNECIDO PELO CLIENTE", report_request.MATERIAL_CLIENTE),
+                ("MATERIAL FORNECIDO PELA PRONAV", report_request.MATERIAL_PRONAV),
+            ]
+
+            max_row_h = 0.9 * inch
+            content_left_pad = max(1, pad_small)
+            content_right_pad = max(1, pad_small)
+
+            for idx, (title, content) in enumerate(sections, start=1):
+                title_par = Paragraph(f"{idx}. {title}", styles['label'])
+                title_tbl = Table([[title_par]], colWidths=[usable_w])
+                title_tbl.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,-1), self.GRAY),
+                    ('BOX', (0,0), (-1,-1), self.LINE_WIDTH, colors.black),
+                    ('LEFTPADDING', (0,0), (-1,-1), max(1, pad_small - 1)),
+                    ('RIGHTPADDING', (0,0), (-1,-1), max(1, pad_small - 1)),
+                    ('TOPPADDING', (0,0), (-1,-1), 1),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+                    ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ]))
+
+                raw_text = str(content or '').strip()
+                if '\r\n\r\n' in raw_text or '\n\n' in raw_text:
+                    paragraphs = [p.strip() for p in raw_text.replace('\r\n', '\n').split('\n\n') if p.strip()]
+                else:
+                    paragraphs = [p.strip() for p in raw_text.replace('\r\n', '\n').split('\n') if p.strip()]
+
+                style_for_content = styles.get('section_value_large', styles['response']) if title.strip().upper().startswith("SERVIÇO REALIZADO") else styles['response']
+
+                if not paragraphs:
+                    empty_par = Paragraph('', style_for_content)
+                    content_tbl = Table([[empty_par]], colWidths=[usable_w])
+                    content_tbl.setStyle(TableStyle([
+                        ('BOX', (0,0), (-1,-1), self.LINE_WIDTH, colors.black),
+                        ('LEFTPADDING', (0,0), (-1,-1), content_left_pad),
+                        ('RIGHTPADDING', (0,0), (-1,-1), content_right_pad),
+                        ('TOPPADDING', (0,0), (-1,-1), 1),
+                        ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+                        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                    ]))
+                    story_local.append(title_tbl)
+                    story_local.append(content_tbl)
+                    story_local.append(Spacer(1, 0.04 * inch))
+                    continue
+
+                # build rows from paragraphs -> cada chunk é uma linha
+                rows = []
+                for ptext in paragraphs:
+                    chunks = split_text_into_chunks_for_row(ptext, style_for_content, usable_w - 2 * content_left_pad, max_row_h)
+                    for ch in chunks:
+                        rows.append([Paragraph(self.sanitize_for_paragraph(ch), style_for_content)])
+
+                content_tbl = Table(rows, colWidths=[usable_w])
+                content_tbl.setStyle(TableStyle([
+                    ('BOX', (0,0), (-1,-1), self.LINE_WIDTH, colors.black),
+                    ('LEFTPADDING', (0,0), (-1,-1), content_left_pad),
+                    ('RIGHTPADDING', (0,0), (-1,-1), content_right_pad),
+                    ('TOPPADDING', (0,0), (-1,-1), 1),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+                    ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ]))
+
+                # Se frame_height foi fornecido, tentamos dividir a tabela,
+                # mas NORMALIZANDO para evitar duplicação de linha na quebra
+                if frame_height is not None:
+                    used_before = self.estimate_height(story_local, usable_w, frame_height)
+                    remaining_space = frame_height - used_before
+                    remaining_space = max(0.0, remaining_space - (0.01 * inch))
+
+                    try:
+                        w_t, h_t = title_tbl.wrap(usable_w, frame_height)
+                    except Exception:
+                        h_t = 0.0
+
+                    min_needed_after_title = 0.06 * inch
+                    if remaining_space < (h_t + min_needed_after_title):
+                        parts = [(content_tbl, getattr(content_tbl, '_cellvalues', None) or [])]
+                    else:
+                        remaining_space_for_table = remaining_space - h_t
+                        if remaining_space_for_table <= 0:
+                            parts = [(content_tbl, getattr(content_tbl, '_cellvalues', None) or [])]
+                        else:
+                            # --- NOVA LÓGICA DE SPLIT (RESERVA ESPAÇO PARA HR + TÍTULO DE CONTINUAÇÃO) ---
+                            try:
+                                hr_height_pts = 1.0 + float(self.LINE_WIDTH) + 1.0
+                            except Exception:
+                                hr_height_pts = 2.0 + float(self.LINE_WIDTH)
+
+                            cont_title_text_tmp = f"{idx}. {title} - CONTINUAÇÃO"
+                            try:
+                                cont_par_tmp = Paragraph(cont_title_text_tmp, styles['label'])
+                                w_ct, cont_title_h = cont_par_tmp.wrap(usable_w, frame_height)
+                            except Exception:
+                                cont_title_h = (self.BASE_LABEL_FONT_SIZE * best_found['scale']) * 1.2
+
+                            safety_margin = 4.0
+                            reserve_space = hr_height_pts + cont_title_h + safety_margin
+                            min_row_estimate = max(10.0, (self.BASE_VALUE_FONT_SIZE * best_found['scale']) * 0.8)
+
+                            if remaining_space_for_table <= (reserve_space + min_row_estimate):
+                                parts = [(content_tbl, getattr(content_tbl, '_cellvalues', None) or [])]
+                            else:
+                                try:
+                                    raw_parts = content_tbl.split(usable_w, max(0.0, remaining_space_for_table - reserve_space))
+                                except Exception:
+                                    raw_parts = [content_tbl]
+
+                                base_table_style = TableStyle([
+                                    ('BOX', (0,0), (-1,-1), self.LINE_WIDTH, colors.black),
+                                    ('LEFTPADDING', (0,0), (-1,-1), content_left_pad),
+                                    ('RIGHTPADDING', (0,0), (-1,-1), content_right_pad),
+                                    ('TOPPADDING', (0,0), (-1,-1), 1),
+                                    ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+                                    ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                                ])
+
+                                parts = []
+                                for rp in raw_parts:
+                                    rows_chunk = getattr(rp, '_cellvalues', None) or []
+                                    if not rows_chunk:
+                                        rows_chunk = [[Paragraph('', style_for_content)]]
+
+                                    if parts and rows_chunk:
+                                        prev_rows = parts[-1][1] or []
+                                        if prev_rows and prev_rows[-1] and rows_chunk[0]:
+                                            prev_last_cell = prev_rows[-1][0]
+                                            curr_first_cell = rows_chunk[0][0]
+
+                                            def _plain_text_from_cell(cell_obj):
+                                                try:
+                                                    if hasattr(cell_obj, 'getPlainText'):
+                                                        return cell_obj.getPlainText().strip()
+                                                    return str(cell_obj).strip()
+                                                except Exception:
+                                                    return str(cell_obj or '').strip()
+
+                                            try:
+                                                prev_txt = _plain_text_from_cell(prev_last_cell)
+                                                curr_txt = _plain_text_from_cell(curr_first_cell)
+                                                n_prev = _norm_text(prev_txt)
+                                                n_curr = _norm_text(curr_txt)
+
+                                                dup = False
+                                                if n_prev and n_curr:
+                                                    if n_prev == n_curr:
+                                                        dup = True
+                                                    elif n_prev in n_curr or n_curr in n_prev:
+                                                        dup = True
+                                                    else:
+                                                        min_overlap = int(max(6, min(len(n_prev), len(n_curr)) * 0.5))
+                                                        if n_prev[:min_overlap] == n_curr[:min_overlap]:
+                                                            dup = True
+
+                                                if dup:
+                                                    rows_chunk = rows_chunk[1:] or [[Paragraph('', style_for_content)]]
+                                            except Exception:
+                                                pass
+
+                                    tbl = Table(rows_chunk, colWidths=[usable_w])
+                                    tbl.setStyle(base_table_style)
+                                    parts.append((tbl, rows_chunk))
+
+                                normalized_parts = []
+                                for j, (tbl_obj, rows_list) in enumerate(parts):
+                                    rcopy = list(rows_list)
+                                    if normalized_parts and rcopy:
+                                        prev_rows = normalized_parts[-1][1]
+                                        if prev_rows and prev_rows[-1] and rcopy and rcopy[0]:
+                                            try:
+                                                prev_cell = prev_rows[-1][0]
+                                                curr_cell = rcopy[0][0]
+                                                prev_text = prev_cell.getPlainText().strip() if hasattr(prev_cell, 'getPlainText') else str(prev_cell).strip()
+                                                curr_text = curr_cell.getPlainText().strip() if hasattr(curr_cell, 'getPlainText') else str(curr_cell).strip()
+                                                if _norm_text(prev_text) and _norm_text(curr_text) and _norm_text(prev_text) == _norm_text(curr_text):
+                                                    rcopy = rcopy[1:] or [[Paragraph('', style_for_content)]]
+                                            except Exception:
+                                                pass
+                                    if rcopy != rows_list:
+                                        try:
+                                            new_tbl = Table(rcopy, colWidths=[usable_w])
+                                            new_tbl.setStyle(base_table_style)
+                                            normalized_parts.append((new_tbl, rcopy))
+                                        except Exception:
+                                            normalized_parts.append((tbl_obj, rows_list))
+                                    else:
+                                        normalized_parts.append((tbl_obj, rows_list))
+                                parts = normalized_parts
+                else:
+                    parts = [(content_tbl, getattr(content_tbl, '_cellvalues', None) or [])]
+
+                if len(parts) <= 1:
+                    story_local.append(title_tbl)
+                    story_local.append(content_tbl)
+                    story_local.append(Spacer(1, 0.04 * inch))
+                else:
+                    story_local.append(title_tbl)
+                    story_local.append(parts[0][0])
+
+                    hr = HR(width=usable_w, thickness=self.LINE_WIDTH, pad_top=1, pad_bottom=1)
+                    story_local.append(hr)
+
+                    cont_title_text = f"{idx}. {title} - CONTINUAÇÃO"
+                    cont_title_par = Paragraph(cont_title_text, styles['label'])
+                    cont_title_tbl = Table([[cont_title_par]], colWidths=[usable_w])
+                    cont_title_tbl.setStyle(TableStyle([
+                        ('BACKGROUND', (0,0), (-1,-1), self.GRAY),
+                        ('BOX', (0,0), (-1,-1), self.LINE_WIDTH, colors.black),
+                        ('LEFTPADDING', (0,0), (-1,-1), max(1, pad_small - 1)),
+                        ('RIGHTPADDING', (0,0), (-1,-1), max(1, pad_small - 1)),
+                        ('TOPPADDING', (0,0), (-1,-1), 1),
+                        ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+                        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                    ]))
+                    story_local.append(cont_title_tbl)
+
+                    for p_part in parts[1:]:
+                        story_local.append(p_part[0])
+                    story_local.append(Spacer(1, 0.04 * inch))
+
+            # Activities table (mantive as regras anteriores)
+            if atividades_list:
+                proportions = [0.09, 0.12, 0.24, 0.45, 0.05, 0.04, 0.04]
+                try:
+                    delta_prop = min(0.12, (square_side / usable_w) * 1.0)
+                except Exception:
+                    delta_prop = 0.0
+
+                idx_desc = 3
+                idx_tec1 = 5
+                idx_tec2 = 6
+
+                proportions[idx_desc] = max(0.08, proportions[idx_desc] - delta_prop)
+                proportions[idx_tec1] = proportions[idx_tec1] + (delta_prop / 2.0)
+                proportions[idx_tec2] = proportions[idx_tec2] + (delta_prop / 2.0)
+
+                total_prop = sum(proportions)
+                if total_prop <= 0:
+                    proportions = [0.12, 0.12, 0.14, 0.30, 0.06, 0.13, 0.13]
+                else:
+                    proportions = [p / total_prop for p in proportions]
+
+                col_widths = [p * usable_w for p in proportions]
+
+                delta_desc_pts = 18.0
+                delta_tec_pts = 8.0
+                delta_desc = (delta_desc_pts / 72.0) * inch
+                delta_tec = (delta_tec_pts / 72.0) * inch
+
+                col_widths[idx_desc] = max(0.08 * usable_w, col_widths[idx_desc] - delta_desc)
+                col_widths[idx_tec1] = col_widths[idx_tec1] + delta_tec
+                col_widths[idx_tec2] = col_widths[idx_tec2] + delta_tec
+
+                header_cells = [
+                    Paragraph("DATA", styles['label_center']),
+                    Paragraph("HORA", styles['label_center']),
+                    Paragraph("TIPO", styles['label_center']),
+                    Paragraph("DESCRIÇÃO", styles['label_center']),
+                    Paragraph("KM", styles['label_center']),
+                    Paragraph("TÉCNICOS", styles['label_center']),
+                    Paragraph("", styles['label_center'])
+                ]
+
+                data = [header_cells]
+
+                # ---------- substitua a versão antiga por esta dentro de generate_pdf(...) ----------
+                for at in atividades_list:
+                    # Data
+                    data_br = format_date_br(at.get('DATA')) if at.get('DATA') else ''
+
+                    # Hora: combine HORA_INICIO / HORA_FIM (frontend envia esses campos)
+                    hi = (at.get('HORA_INICIO') or at.get('HORA') or '')  # fallback seguro
+                    hf = (at.get('HORA_FIM') or '')
+                    if hi and hf:
+                        hora_comb = f"{hi} - {hf}"
+                    else:
+                        hora_comb = hi or hf or ''
+
+                    # Tipo (mantemos exatamente o que veio do front)
+                    tipo = at.get('TIPO') or ''
+
+                    # Valores vindos do front — PRESERVE exatamente (não forçar uppercase nem trim além do necessário)
+                    descricao_from_front = at.get('DESCRICAO') if ('DESCRICAO' in at and at.get('DESCRICAO') is not None) else ''
+                    km_from_front = at.get('KM') if ('KM' in at and at.get('KM') is not None) else ''
+                    motivo = at.get('MOTIVO') or ''
+                    origem = at.get('ORIGEM') or ''
+                    destino = at.get('DESTINO') or ''
+
+                    # Normaliza somente para comparar tipos
+                    t_norm = (tipo or '').strip().lower()
+
+                    # Regras EXATAS (seguem comportamento do front)
+                    if t_norm in ('viagem terrestre', 'viagem aérea', 'translado'):
+                        # Viagens: Descrição = "Origem x Destino" (se fornecido) — preserve DESCRICAO se o front já enviou
+                        desc_val = ''
+                        if origem or destino:
+                            desc_val = f"{origem} x {destino}".strip()
+                        descricao_final = descricao_from_front if descricao_from_front else desc_val
+                        km_final = km_from_front or ''
+                    elif t_norm in ('período de espera', 'periodo de espera'):
+                        # Período de Espera: Descrição = MOTIVO, KM bloqueado
+                        descricao_final = motivo or descricao_from_front or ''
+                        km_final = ''
+                    elif t_norm in ('mão-de-obra-técnica', 'mão de obra técnica', 'mão-de-obra tecnica'):
+                        # Mão-de-Obra-Técnica: descrição fixa, KM bloqueado
+                        descricao_final = 'Mão-de-Obra-Técnica'
+                        km_final = ''
+                    else:
+                        # Outros tipos: preserve exatamente o que veio do front
+                        descricao_final = descricao_from_front or ''
+                        km_final = km_from_front or ''
+
+                    # --- depois disso o código continua como antes criando os Paragraphs/Cells ---
+                    max_h_cell = 0.7 * inch
+                    c0 = shrink_paragraph_to_fit(str(data_br or ''), styles['response'], col_widths[0] - 6, max_h_cell)
+                    c1 = shrink_paragraph_to_fit(hora_comb, styles['response'], col_widths[1] - 6, max_h_cell)
+                    c2 = shrink_paragraph_to_fit(tipo, styles['response'], col_widths[2] - 6, max_h_cell)
+                    c3 = shrink_paragraph_to_fit(descricao_final, styles['response'], col_widths[3] - 6, max_h_cell)
+                    c4 = shrink_paragraph_to_fit(km_final, styles['response'], col_widths[4] - 6, max_h_cell)
+                    c5 = shrink_paragraph_to_fit(str(at.get('TECNICO1') or ''), styles['response'], col_widths[5] - 6, max_h_cell)
+                    c6 = shrink_paragraph_to_fit(str(at.get('TECNICO2') or ''), styles['response'], col_widths[6] - 6, max_h_cell)
+
+                    data.append([c0, c1, c2, c3, c4, c5, c6])
+                # ---------- fim da substituição ----------
+
+
+                activities_table = Table(data, colWidths=col_widths, repeatRows=1)
+                activities_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), self.GRAY),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.black),
+                    ('ALIGN', (0,0), (-1,0), 'CENTER'),
+                    ('ALIGN', (0,1), (-1,-1), 'LEFT'),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                    ('BOX', (0,0), (-1,-1), self.LINE_WIDTH, colors.black),
+                    ('GRID', (0,0), (-1,-1), self.LINE_WIDTH / 2.0, colors.black),
+                    ('LEFTPADDING', (0,0), (-1,-1), pad_small),
+                    ('RIGHTPADDING', (0,0), (-1,-1), pad_small),
+                    ('TOPPADDING', (0,0), (-1,-1), 1),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+                    ('SPAN', (5,0), (6,0)),
+                ]))
+                story_local.append(activities_table)
+
+            return story_local
+
+        def split_text_into_chunks_for_row(text, style, max_w, max_row_h, min_chunk_chars=20):
+            out = []
+            remaining = str(text or '')
+            from reportlab.platypus import Paragraph
+            while remaining:
+                try:
+                    p = Paragraph(self.sanitize_for_paragraph(remaining), style)
+                    w, h = p.wrap(max_w, max_row_h)
+                except Exception:
+                    h = max_row_h + 1
+                if h <= max_row_h:
+                    out.append(remaining)
+                    break
+                lo = min_chunk_chars
+                hi = len(remaining)
+                best = None
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    cand = remaining[:mid].rstrip()
+                    try:
+                        cand_p = Paragraph(self.sanitize_for_paragraph(cand), style)
+                        w_c, h_c = cand_p.wrap(max_w, max_row_h)
+                    except Exception:
+                        h_c = max_row_h + 1
+                    if h_c <= max_row_h:
+                        best = mid
+                        lo = mid + 1
+                    else:
+                        hi = mid - 1
+                if not best:
+                    best = max(1, min_chunk_chars)
+                chunk = remaining[:best].rstrip()
+                if ' ' in chunk:
+                    last_space = chunk.rfind(' ')
+                    if last_space >= int(best * 0.4):
+                        chunk = chunk[:last_space].rstrip()
+                out.append(chunk)
+                remaining = remaining[len(chunk):].lstrip()
+                if len(out) > 500:
+                    out.append(remaining[:200] + '…')
+                    break
+            return out
+
+        # Find best scale/margins (busca simples)
+        best_found = {
+            'fit': False,
+            'scale': 1.0,
+            'top_margin': preserved_top_margin_base,
+            'bottom_margin': preserved_bottom_margin_base,
+            'usable_w': PAGE_W - 2 * MARG,
+            'frame_height': 0.0,
+            'story': None,
+            'styles': None,
+            'pad_small': None,
+            'pad_med': None
+        }
+
+        original_usable_w = PAGE_W - 2 * MARG
+
+        for m_factor in margin_reduction_factors:
+            preserved_top_margin = preserved_top_margin_base * m_factor
+            preserved_bottom_margin = preserved_bottom_margin_base * m_factor
+
+            usable_w = original_usable_w
+            frame_top = PAGE_H - preserved_top_margin - header_height_base
+            frame_bottom = preserved_bottom_margin + footer_total_height_base
+            frame_height = frame_top - frame_bottom
+            if frame_height <= 0:
+                continue
+
+            styles_test, ps, pm = make_styles(scale=MAX_SCALE)
+            story_test = build_story(styles_test, ps, pm, usable_w)
+            req = self.estimate_height(story_test, usable_w, frame_height)
+            if req <= frame_height:
                 best_found.update({
                     'fit': True,
-                    'scale': found_scale,
+                    'scale': MAX_SCALE,
                     'top_margin': preserved_top_margin,
                     'bottom_margin': preserved_bottom_margin,
                     'usable_w': usable_w,
                     'frame_height': frame_height,
-                    'story': found_story,
-                    'styles': found_styles,
-                    'pad_small': found_pad_small,
-                    'pad_med': found_pad_med
+                    'story': story_test,
+                    'styles': styles_test,
+                    'pad_small': ps,
+                    'pad_med': pm
                 })
-            # we prefer larger margin factor (less reduction) if same scale: break
-            break
-
-    # If nothing fit with min scale even after margin reductions, pick the minimal scale & last margin attempt to allow multi-page
-    if not best_found['fit']:
-        # pick the smallest scale and last attempted margins
-        last_m_factor = margin_reduction_factors[-1]
-        preserved_top_margin = preserved_top_margin_base * last_m_factor
-        preserved_bottom_margin = preserved_bottom_margin_base * last_m_factor
-        usable_w = original_usable_w
-        frame_top = PAGE_H - preserved_top_margin - header_height_base
-        frame_bottom = preserved_bottom_margin + footer_total_height_base
-        frame_height = max(1.0 * inch, frame_top - frame_bottom)
-        styles_min, ps_min, pm_min = make_styles(scale=MIN_SCALE)
-        story_min = build_story(styles_min, ps_min, pm_min, usable_w)
-        best_found.update({
-            'fit': False,
-            'scale': MIN_SCALE,
-            'top_margin': preserved_top_margin,
-            'bottom_margin': preserved_bottom_margin,
-            'usable_w': usable_w,
-            'frame_height': frame_height,
-            'story': story_min,
-            'styles': styles_min,
-            'pad_small': ps_min,
-            'pad_med': pm_min
-        })
-        logger.info("Não foi possível encaixar tudo em 1 página mesmo em min-scale; usaremos scale mínimo %.2f e permitiremos múltiplas páginas.", MIN_SCALE)
-    else:
-        logger.info("Conteúdo caberá na primeira página com scale=%.3f (margens: top=%.2fmm bottom=%.2fmm).",
-                    best_found['scale'], best_found['top_margin']*25.4, best_found['bottom_margin']*25.4)
-
-    # Now build actual doc with chosen margins and story/styles
-    chosen_top_margin = best_found['top_margin']
-    chosen_bottom_margin = best_found['bottom_margin']
-    chosen_styles = best_found['styles']
-    chosen_pad_small = best_found['pad_small']
-    chosen_pad_med = best_found['pad_med']
-    story = best_found['story']
-    usable_w = best_found['usable_w']
-    frame_top = PAGE_H - chosen_top_margin - header_height_base
-    frame_bottom = chosen_bottom_margin + footer_total_height_base
-    frame_height = max(1.0 * inch, frame_top - frame_bottom)
-
-    doc = BaseDocTemplate(pdf_buffer, pagesize=PAGE_SIZE,
-                          leftMargin=MARG, rightMargin=MARG,
-                          topMargin=chosen_top_margin, bottomMargin=chosen_bottom_margin)
-
-    content_frame = Frame(MARG, frame_bottom, usable_w, frame_height,
-                          leftPadding=6, rightPadding=6, topPadding=6, bottomPadding=6, id='content_frame')
-
-    # Prepare drawing functions that capture chosen_top_margin etc.
-    lp = app.config.get('LOGO_PATH') or DEFAULT_LOGO
-
-    def draw_header(canvas, doc_local):
-        canvas.saveState()
-        canvas.setLineJoin(1)
-        canvas.setLineWidth(LINE_WIDTH)
-        canvas.setStrokeColor(colors.black)
-
-        left_x = MARG
-        right_x = MARG + usable_w
-        top_y = PAGE_H - doc_local.topMargin
-        bottom_y = top_y - header_height_base
-
-        sep_x1 = left_x + square_side
-        sep_x2 = left_x + square_side + (usable_w - 2 * square_side if usable_w > 2 * square_side else usable_w - square_side)
-
-        canvas.setFillColor(GRAY)
-        canvas.rect(sep_x1, top_y - header_row0, (sep_x2 - sep_x1), header_row0, stroke=0, fill=1)
-        canvas.setFillColor(colors.black)
-
-        eps = 0.4
-        canvas.line(left_x - eps, top_y + eps, right_x + eps, top_y + eps)
-        canvas.line(left_x - eps, bottom_y - eps, right_x + eps, bottom_y - eps)
-        canvas.line(left_x - eps, bottom_y - eps, left_x - eps, top_y + eps)
-        canvas.line(right_x + eps, bottom_y - eps, right_x + eps, top_y + eps)
-
-        canvas.line(sep_x1, bottom_y - eps, sep_x1, top_y + eps)
-        canvas.line(sep_x2, bottom_y - eps, sep_x2, top_y + eps)
-
-        y_top = top_y
-        y_row0 = y_top - header_row0
-        y_row1 = y_row0 - header_row
-        y_row2 = y_row1 - header_row
-        y_row3 = y_row2 - header_row
-
-        canvas.line(sep_x1, y_row0, sep_x2, y_row0)
-        canvas.line(sep_x1, y_row1, sep_x2, y_row1)
-        canvas.line(sep_x1, y_row2, sep_x2, y_row2)
-        canvas.line(sep_x1, y_row3, sep_x2, y_row3)
-
-        inner_label_w = 0.7 * inch
-        inner_val_w_left = 1.6 * inch * 1.25
-        inner_label_w2 = 0.6 * inch
-        total_center = sep_x2 - sep_x1
-
-        delta_pts = 75.0
-        delta_inch = (delta_pts / 72.0) * inch
-        inner_val_w_left = inner_val_w_left + delta_inch
-
-        right_available = total_center - (inner_label_w + inner_val_w_left + inner_label_w2)
-        min_right = 0.6 * inch
-        if right_available < min_right:
-            shortage = min_right - right_available
-            inner_val_w_left = max(0.9 * inch, inner_val_w_left - shortage)
-            right_available = min_right
-        inner_val_w_right = right_available
-
-        col0_w, col1_w, col2_w, col3_w = inner_label_w, inner_val_w_left, inner_label_w2, inner_val_w_right
-        col_x0 = sep_x1
-        col_x1 = col_x0 + col0_w
-        col_x2 = col_x1 + col1_w
-        col_x3 = col_x2 + col2_w
-        col_x4 = col_x3 + col3_w
-
-        canvas.line(col_x1, y_row3, col_x1, y_row0)
-        canvas.line(col_x2, y_row3, col_x2, y_row0)
-        canvas.line(col_x3, y_row3, col_x3, y_row0)
-
-        canvas.setFont(FONT_BOLD, BASE_TITLE_FONT_SIZE * best_found['scale'])
-        canvas.drawCentredString((sep_x1 + sep_x2) / 2.0, y_top - header_row0 / 2.0 - 3, "RELATÓRIO DE SERVIÇO")
-
-        try:
-            if lp and os.path.exists(lp):
-                img_reader = ImageReader(lp)
-                iw, ih = img_reader.getSize()
-                pad = 6.0
-                max_w = max(1.0, square_side - 2 * pad)
-                max_h = max(1.0, header_height_base - 2 * pad)
-                ratio_w = max_w / iw if iw > 0 else 1.0
-                ratio_h = max_h / ih if ih > 0 else 1.0
-                ratio = min(1.0, ratio_w, ratio_h)
-                logo_w = iw * ratio
-                logo_h = ih * ratio
-                logo_w = logo_w + 3.0
-                logo_h = max(1.0, logo_h - 3.0)
-                if logo_w > max_w:
-                    factor = max_w / logo_w
-                    logo_w = logo_w * factor
-                    logo_h = logo_h * factor
-                if logo_h > max_h:
-                    factor = max_h / logo_h
-                    logo_w = logo_w * factor
-                    logo_h = logo_h * factor
-                logo_x = left_x + (square_side - logo_w) / 2.0
-                logo_y = bottom_y + (header_height_base - logo_h) / 2.0
-                canvas.drawImage(img_reader, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
-        except Exception as ie:
-            logger.info("Erro ao desenhar logo (final): %s", ie)
-
-        contact_x_center = sep_x2 + (square_side / 2.0)
-        title_text = "PRONAV MARINE"
-        title_font_size = max(7, int(9 * best_found['scale']))
-        detail_font_size = max(5, int(6 * best_found['scale']))
-        detail_lines = ["Tel.: (22) 2141-2458", "Cel.: (22) 99221-1893", "service@pronav.com.br", "www.pronav.com.br"]
-        detail_leading = detail_font_size * 1.2
-        total_height = title_font_size + 4 + (len(detail_lines) * detail_leading)
-        square_top = top_y
-        square_bottom = bottom_y
-        mid_y = (square_top + square_bottom) / 2.0
-        y = mid_y + total_height / 2.0
-
-        canvas.setFont(FONT_BOLD, title_font_size)
-        canvas.setFillColor(colors.HexColor('#005BD0'))
-        canvas.drawCentredString(contact_x_center, y - (title_font_size * 0.3), title_text)
-
-        canvas.setFillColor(colors.black)
-        canvas.setFont(FONT_REGULAR, detail_font_size)
-        y = y - (title_font_size * 0.7) - 4
-        for i, ln in enumerate(detail_lines):
-            canvas.drawCentredString(contact_x_center, y - i * detail_leading, ln)
-
-        labels_left = ["NAVIO:", "CONTATO:", "LOCAL:"]
-        values_left = [
-            ensure_upper_safe(report_request.NAVIO or ''),
-            ensure_upper_safe(report_request.CONTATO or ''),
-            ' - '.join(filter(None, [ensure_upper_safe(report_request.LOCAL or ''), ensure_upper_safe(report_request.CIDADE or ''), ensure_upper_safe(report_request.ESTADO or '')]))
-        ]
-        labels_right = ["CLIENTE:", "OBRA:", "OS:"]
-        values_right = [ensure_upper_safe(report_request.CLIENTE or ''), ensure_upper_safe(report_request.OBRA or ''), ensure_upper_safe(report_request.OS or '')]
-
-        rows_y = [y_row0, y_row1, y_row2, y_row3]
-        for i in range(3):
-            top = rows_y[i]
-            bottom = rows_y[i + 1]
-            center_y = (top + bottom) / 2.0 - 4
-            canvas.setFont(FONT_BOLD, max(6, int(BASE_LABEL_FONT_SIZE * best_found['scale'])))
-            canvas.setFillColor(colors.black)
-            canvas.drawString(col_x0 + 4, center_y, labels_left[i])
-            val_font = max(6, int(BASE_VALUE_FONT_SIZE * best_found['scale']))
-            if labels_left[i].startswith("LOCAL"):
-                val_font = max(5, val_font - 1)
-            canvas.setFont(FONT_REGULAR, val_font)
-            canvas.drawString(col_x1 + 4, center_y, values_left[i])
-            canvas.setFont(FONT_BOLD, max(6, int(BASE_LABEL_FONT_SIZE * best_found['scale'])))
-            canvas.drawString(col_x2 + 4, center_y, labels_right[i])
-            canvas.setFont(FONT_REGULAR, val_font)
-            canvas.drawString(col_x3 + 4, center_y, values_right[i])
-
-        canvas.restoreState()
-
-    def draw_signatures_and_footer(canvas, doc_local):
-        canvas.saveState()
-        canvas.setLineWidth(LINE_WIDTH)
-        canvas.setStrokeColor(colors.black)
-
-        left = MARG
-        right = MARG + usable_w
-        mid = left + usable_w / 2.0
-
-        bottom_margin = doc_local.bottomMargin
-        sig_header_h_local = sig_header_h_base
-        sig_area_h_local = sig_area_h_base
-        footer_h_local = footer_h_base
-        footer_y = bottom_margin
-
-        canvas.setFillColor(GRAY)
-        canvas.rect(left, footer_y, usable_w, footer_h_local, stroke=0, fill=1)
-        canvas.setFillColor(colors.black)
-        canvas.setFont(FONT_BOLD, max(6, int(BASE_VALUE_FONT_SIZE * best_found['scale'])))
-        canvas.drawCentredString(left + usable_w / 2.0, footer_y + footer_h_local / 2.0 - 2, "O SERVIÇO ACIMA FOI EXECUTADO SATISFATORIAMENTE")
-
-        sig_bottom = footer_y + footer_h_local
-        sig_total_h_local = sig_area_h_local + sig_header_h_local
-        canvas.setFillColor(GRAY)
-        canvas.rect(left, sig_bottom + sig_area_h_local, usable_w / 2.0, sig_header_h_local, stroke=0, fill=1)
-        canvas.rect(mid, sig_bottom + sig_area_h_local, usable_w / 2.0, sig_header_h_local, stroke=0, fill=1)
-        canvas.setFillColor(colors.black)
-        canvas.setFont(FONT_BOLD, max(6, int(BASE_LABEL_FONT_SIZE * best_found['scale'])))
-        canvas.drawCentredString(left + (usable_w / 4.0), sig_bottom + sig_area_h_local + sig_header_h_local / 2.0 - 2, "ASSINATURA DO COMANDANTE")
-        canvas.drawCentredString(mid + (usable_w / 4.0), sig_bottom + sig_area_h_local + sig_header_h_local / 2.0 - 2, "ASSINATURA DO TÉCNICO")
-
-        canvas.setLineWidth(LINE_WIDTH)
-        canvas.rect(left, sig_bottom, usable_w / 2.0, sig_total_h_local, stroke=1, fill=0)
-        canvas.rect(mid, sig_bottom, usable_w / 2.0, sig_total_h_local, stroke=1, fill=0)
-        eps = 0.4
-        canvas.line(mid, sig_bottom - eps, mid, sig_bottom + sig_total_h_local + eps)
-
-        canvas.restoreState()
-
-    def on_page_template(canvas, doc_local):
-        draw_header(canvas, doc_local)
-        draw_signatures_and_footer(canvas, doc_local)
-        try:
-            canvas.saveState()
-            canvas.setFont(FONT_REGULAR, max(6, int(7 * best_found['scale'])))
-            canvas.setFillColor(colors.HexColor('#666666'))
-            y_page = frame_bottom + (0.06 * inch)
-            canvas.drawCentredString(PAGE_W / 2.0, y_page, f"PÁGINA {doc_local.page}")
-            canvas.restoreState()
-        except Exception as e:
-            logger.info("Erro ao desenhar numeração de página: %s", e)
-
-    page_template = PageTemplate(id='default', frames=[content_frame], onPage=on_page_template)
-    doc.addPageTemplates([page_template])
-
-    # Build PDF (story already tailored to scale and will fit first page if possible)
-    doc.build(story)
-    pdf_buffer.seek(0)
-
-    # filename
-    equip_name_for_file = ''
-    try:
-        if equipments_list and len(equipments_list) > 0:
-            e0 = equipments_list[0]
-            if isinstance(e0, dict):
-                equip_name_for_file = e0.get('equipamento') or e0.get('Equipamento') or ''
+                break
             else:
-                equip_name_for_file = str(e0)
-        if not equip_name_for_file:
-            equip_name_for_file = report_request.EQUIPAMENTO or ''
-        equip_name_for_file = str(equip_name_for_file).strip().replace(' ', '_').replace('/', '-')
-    except Exception:
+                found_story = found_styles = found_ps = found_pm = None
+                lo = MIN_SCALE
+                hi = MAX_SCALE
+                found_scale = None
+                for _ in range(12):
+                    mid = (lo + hi) / 2.0
+                    styles_mid, ps_mid, pm_mid = make_styles(scale=mid)
+                    story_mid = build_story(styles_mid, ps_mid, pm_mid, usable_w)
+                    req_mid = self.estimate_height(story_mid, usable_w, frame_height)
+                    if req_mid <= frame_height:
+                        found_scale = mid
+                        found_story = story_mid
+                        found_styles = styles_mid
+                        found_ps = ps_mid
+                        found_pm = pm_mid
+                        lo = mid
+                    else:
+                        hi = mid
+                    if (hi - lo) < 0.005:
+                        break
+                if found_scale:
+                    best_found.update({
+                        'fit': True,
+                        'scale': found_scale,
+                        'top_margin': preserved_top_margin,
+                        'bottom_margin': preserved_bottom_margin,
+                        'usable_w': usable_w,
+                        'frame_height': frame_height,
+                        'story': found_story,
+                        'styles': found_styles,
+                        'pad_small': found_ps,
+                        'pad_med': found_pm
+                    })
+                    break
+
+        if not best_found['fit']:
+            last_m_factor = margin_reduction_factors[-1]
+            preserved_top_margin = preserved_top_margin_base * last_m_factor
+            preserved_bottom_margin = preserved_bottom_margin_base * last_m_factor
+            usable_w = original_usable_w
+            frame_top = PAGE_H - preserved_top_margin - header_height_base
+            frame_bottom = preserved_bottom_margin + footer_total_height_base
+            frame_height = max(1.0 * inch, frame_top - frame_bottom)
+            styles_min, ps_min, pm_min = make_styles(scale=MIN_SCALE)
+            story_min = build_story(styles_min, ps_min, pm_min, usable_w, frame_height=frame_height)
+            best_found.update({
+                'fit': False,
+                'scale': MIN_SCALE,
+                'top_margin': preserved_top_margin,
+                'bottom_margin': preserved_bottom_margin,
+                'usable_w': usable_w,
+                'frame_height': frame_height,
+                'story': story_min,
+                'styles': styles_min,
+                'pad_small': ps_min,
+                'pad_med': pm_min
+            })
+
+        # escolha final
+        chosen_top_margin = best_found['top_margin']
+        chosen_bottom_margin = best_found['bottom_margin']
+        chosen_styles = best_found['styles']
+        chosen_pad_small = best_found['pad_small']
+        chosen_pad_med = best_found['pad_med']
+        usable_w = best_found['usable_w']
+        frame_top = PAGE_H - chosen_top_margin - header_height_base
+        frame_bottom = chosen_bottom_margin + footer_total_height_base
+        frame_height = max(1.0 * inch, frame_top - frame_bottom)
+
+        # final rebuild passando frame_height para detectar quebras corretamente
+        story = build_story(chosen_styles, chosen_pad_small, chosen_pad_med, usable_w, frame_height=frame_height)
+
+        # NÃO centralizamos verticalmente: sempre começamos logo abaixo do cabeçalho
+        vertical_offset = 0.0
+
+        # Document e frame
+        doc = BaseDocTemplate(pdf_buffer, pagesize=PAGE_SIZE,
+                             leftMargin=MARG, rightMargin=MARG,
+                             topMargin=chosen_top_margin, bottomMargin=chosen_bottom_margin)
+
+        topPadding_val = max(4, int(4 + vertical_offset))  # padding pequeno e determinístico
+        content_frame = Frame(MARG, frame_bottom, usable_w, frame_height,
+                              leftPadding=4, rightPadding=4, topPadding=topPadding_val, bottomPadding=4, id='content_frame')
+
+        # logo lookup (automatic)
+        logo_bytes = find_logo_bytes(self.config)
+
+        def draw_header(canvas, doc_local):
+            canvas.saveState()
+            canvas.setLineJoin(1)
+            canvas.setLineWidth(self.LINE_WIDTH)
+            canvas.setStrokeColor(colors.black)
+
+            left_x = MARG
+            right_x = MARG + usable_w
+            top_y = PAGE_H - doc_local.topMargin
+            bottom_y = top_y - header_height_base
+
+            logo_x0 = left_x
+            logo_x1 = left_x + square_side
+
+            sep_x1 = logo_x1
+            sep_x2 = right_x
+
+            eps = 0.4
+            canvas.line(left_x - eps, top_y + eps, right_x + eps, top_y + eps)
+            canvas.line(left_x - eps, bottom_y - eps, right_x + eps, bottom_y - eps)
+            canvas.line(left_x - eps, bottom_y - eps, left_x - eps, top_y + eps)
+            canvas.line(right_x + eps, bottom_y - eps, right_x + eps, top_y + eps)
+
+            try:
+                canvas.rect(logo_x0, bottom_y, square_side, header_height_base, stroke=1, fill=0)
+            except Exception:
+                pass
+
+            y_top = top_y
+            y_row0 = y_top - header_row0
+            y_row1 = y_row0 - header_row
+            y_row2 = y_row1 - header_row
+            y_row3 = y_row2 - header_row
+
+            canvas.line(logo_x1, y_row0, right_x, y_row0)
+            canvas.line(logo_x1, y_row1, right_x, y_row1)
+            canvas.line(logo_x1, y_row2, right_x, y_row2)
+            canvas.line(logo_x1, y_row3, right_x, y_row3)
+
+            left_increase = 1.30
+            inner_label_w = 0.8 * inch * left_increase
+            inner_val_w_left = 2.2 * inch * left_increase
+            inner_label_w2 = 0.5 * inch
+            total_center = sep_x2 - sep_x1
+            inner_val_w_right = total_center - (inner_label_w + inner_val_w_left + inner_label_w2)
+
+            min_right = 0.75 * inch
+            if inner_val_w_right < min_right:
+                deficit = min_right - inner_val_w_right
+                reduce_each = deficit / 2.0
+                inner_val_w_left = max(0.5 * inch, inner_val_w_left - reduce_each)
+                inner_label_w = max(0.4 * inch, inner_label_w - reduce_each)
+                inner_val_w_right = total_center - (inner_label_w + inner_val_w_left + inner_label_w2)
+                inner_val_w_right = max(inner_val_w_right, min_right)
+
+            col0_w, col1_w, col2_w, col3_w = inner_label_w, inner_val_w_left, inner_label_w2, inner_val_w_right
+            col_x0 = sep_x1
+            col_x1 = col_x0 + col0_w
+            col_x2 = col_x1 + col1_w
+            col_x3 = col_x2 + col2_w
+            col_x4 = col_x3 + col3_w
+
+            offset_left_line = 2.0
+            offset_right_line = 4.0
+            canvas.line(col_x1, bottom_y, col_x1, top_y)
+            canvas.line(col_x2 + offset_left_line, bottom_y, col_x2 + offset_left_line, top_y)
+            canvas.line(col_x3 + offset_right_line, bottom_y, col_x3 + offset_right_line, top_y)
+
+            canvas.line(left_x, bottom_y, right_x, bottom_y)
+
+            # contact line
+            try:
+                contact_line = "PRONAV COMÉRCIO E SERVIÇOS LTDA.   |   CNPJ: 56.286.063/0001-46   |   Tel.: (22) 2141-2458   |   Cel.: (22) 99221-1893   |   service@pronav.com.br   |   www.pronav.com.br"
+                contact_font_size = max(7, int(7 * best_found['scale']))
+                contact_y = top_y + (0.05 * inch)
+                canvas.setFont(self.FONT_REGULAR, contact_font_size)
+                canvas.setFillColor(colors.HexColor('#333333'))
+                canvas.drawCentredString(PAGE_W / 2.0, contact_y, contact_line)
+                canvas.setFillColor(colors.black)
+            except Exception:
+                pass
+
+            # gray title background
+            try:
+                canvas.setFillColor(self.GRAY)
+                canvas.rect(sep_x1, y_row0, (sep_x2 - sep_x1), header_row0, stroke=0, fill=1)
+                canvas.setFillColor(colors.black)
+            except Exception:
+                pass
+
+            title_font_size = max(9, int(self.BASE_TITLE_FONT_SIZE * best_found['scale']) + 1)
+            canvas.setFont(self.FONT_BOLD, title_font_size)
+            canvas.drawCentredString((sep_x1 + sep_x2) / 2.0, y_row0 + (header_row0 / 2.0) - 3, "RELATÓRIO DE SERVIÇO")
+
+            canvas.setStrokeColor(colors.black)
+            canvas.setLineWidth(self.LINE_WIDTH)
+            canvas.line(sep_x1, y_row0, right_x, y_row0)
+
+            # logo image (from bytes if available, otherwise fallback text)
+            logo_drawn = False
+            try:
+                if logo_bytes:
+                    try:
+                        img_reader = ImageReader(io.BytesIO(logo_bytes))
+                        iw, ih = img_reader.getSize()
+                        pad = 6.0
+                        max_w = max(1.0, square_side - 2 * pad)
+                        max_h = max(1.0, header_height_base - 2 * pad)
+                        ratio_w = max_w / iw if iw > 0 else 1.0
+                        ratio_h = max_h / ih if ih > 0 else 1.0
+                        ratio = min(1.0, ratio_w, ratio_h)
+                        logo_w = iw * ratio
+                        logo_h = ih * ratio
+                        if logo_w > max_w:
+                            factor = max_w / logo_w
+                            logo_w *= factor
+                            logo_h *= factor
+                        logo_x = logo_x0 + (square_side - logo_w) / 2.0
+                        logo_y = bottom_y + (header_height_base - logo_h) / 2.0
+                        canvas.drawImage(img_reader, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
+                        logo_drawn = True
+                    except Exception:
+                        logo_drawn = False
+                else:
+                    lp = getattr(self.config, 'LOGO_PATH', None)
+                    if lp and isinstance(lp, str):
+                        try:
+                            pth = Path(lp)
+                            if not pth.is_absolute():
+                                pth = Path(__file__).resolve().parent / pth
+                            if pth.exists():
+                                img_reader = ImageReader(str(pth))
+                                iw, ih = img_reader.getSize()
+                                pad = 6.0
+                                max_w = max(1.0, square_side - 2 * pad)
+                                max_h = max(1.0, header_height_base - 2 * pad)
+                                ratio_w = max_w / iw if iw > 0 else 1.0
+                                ratio_h = max_h / ih if ih > 0 else 1.0
+                                ratio = min(1.0, ratio_w, ratio_h)
+                                logo_w = iw * ratio
+                                logo_h = ih * ratio
+                                if logo_w > max_w:
+                                    factor = max_w / logo_w
+                                    logo_w *= factor
+                                    logo_h *= factor
+                                logo_x = logo_x0 + (square_side - logo_w) / 2.0
+                                logo_y = bottom_y + (header_height_base - logo_h) / 2.0
+                                canvas.drawImage(img_reader, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
+                                logo_drawn = True
+                        except Exception:
+                            logo_drawn = False
+            except Exception:
+                logo_drawn = False
+
+            if not logo_drawn:
+                try:
+                    fsize = max(12, int(10 * best_found['scale']))
+                    canvas.setFont(self.FONT_BOLD, fsize)
+                    canvas.setFillColor(colors.HexColor('#333333'))
+                    canvas.drawCentredString(logo_x0 + square_side/2.0, bottom_y + header_height_base/2.0 - (fsize/4.0), "PRONAV")
+                    canvas.setFillColor(colors.black)
+                except Exception:
+                    pass
+
+            # labels & values (font sizes made equal for labels and values)
+            labels_left = ["NAVIO:", "CONTATO:", "LOCAL:"]
+            values_left = [
+                ensure_upper_safe(getattr(report_request, 'NAVIO', '') or ''),
+                ensure_upper_safe(getattr(report_request, 'CONTATO', '') or ''),
+                ' - '.join(filter(None, [
+                    ensure_upper_safe(getattr(report_request, 'LOCAL', '') or ''),
+                    ensure_upper_safe(getattr(report_request, 'CIDADE', '') or ''),
+                    ensure_upper_safe(getattr(report_request, 'ESTADO', '') or '')
+                ]))
+            ]
+            labels_right = ["CLIENTE", "OBRA:", "OS:"]
+            values_right = [
+                ensure_upper_safe(getattr(report_request, 'CLIENTE', '') or ''),
+                ensure_upper_safe(getattr(report_request, 'OBRA', '') or ''),
+                ensure_upper_safe(getattr(report_request, 'OS', '') or '')
+            ]
+
+            rows_y = [y_row0, y_row1, y_row2, y_row3]
+
+            left_label_padding = 4
+            left_value_padding = 4
+            right_label_padding = 4
+            right_value_padding = 6
+
+            max_width = col_x4 - col_x3 - right_value_padding
+
+            # compute unified font sizes
+            label_font = max(7, int(self.BASE_LABEL_FONT_SIZE * best_found['scale']))
+            value_font = label_font  # mantém MESMO tamanho entre labels e values
+
+            for i in range(3):
+                top = rows_y[i]
+                bottom = rows_y[i + 1]
+                center_y = (top + bottom) / 2.0 - 3
+
+                canvas.setFont(self.FONT_BOLD, label_font)
+                canvas.setFillColor(colors.black)
+                canvas.drawString(col_x0 + left_label_padding, center_y, labels_left[i])
+
+                canvas.setFont(self.FONT_REGULAR, value_font)
+                canvas.drawString(col_x1 + left_value_padding, center_y, values_left[i])
+
+                canvas.setFont(self.FONT_BOLD, label_font)
+                canvas.drawString(col_x2 + right_label_padding, center_y, labels_right[i])
+                canvas.setFont(self.FONT_REGULAR, value_font)
+
+                value_text = values_right[i] or ''
+                if canvas.stringWidth(value_text, self.FONT_REGULAR, value_font) > max_width:
+                    while value_text and canvas.stringWidth(value_text + '…', self.FONT_REGULAR, value_font) > max_width:
+                        value_text = value_text[:-1]
+                    value_text = (value_text + '…') if value_text else ''
+
+                value_x = col_x3 + right_value_padding
+                canvas.drawString(value_x, center_y, value_text)
+
+            canvas.restoreState()
+
+        def draw_signatures_and_footer(canvas, doc_local):
+            canvas.saveState()
+            canvas.setLineWidth(self.LINE_WIDTH)
+            canvas.setStrokeColor(colors.black)
+
+            left = MARG
+            right = MARG + usable_w
+            mid = left + usable_w / 2.0
+
+            bottom_margin = doc_local.bottomMargin
+            sig_header_h_local = sig_header_h_base
+            sig_area_h_local = sig_area_h_base
+            footer_h_local = footer_h_base
+            footer_y = bottom_margin
+
+            canvas.setFillColor(self.GRAY)
+            canvas.rect(left, footer_y, usable_w, footer_h_local, stroke=0, fill=1)
+            canvas.setFillColor(colors.black)
+            canvas.setFont(self.FONT_BOLD, max(7, int(self.BASE_VALUE_FONT_SIZE * best_found['scale']) + 1))
+            canvas.drawCentredString(left + usable_w / 2.0, footer_y + footer_h_local / 2.0 - 3, "O SERVIÇO ACIMA FOI EXECUTADO SATISFATORIAMENTE")
+
+            sig_bottom = footer_y + footer_h_local
+            sig_total_h_local = sig_area_h_local + sig_header_h_local
+            canvas.setFillColor(self.GRAY)
+            canvas.rect(left, sig_bottom + sig_area_h_local, usable_w / 2.0, sig_header_h_local, stroke=0, fill=1)
+            canvas.rect(mid, sig_bottom + sig_area_h_local, usable_w / 2.0, sig_header_h_local, stroke=0, fill=1)
+            canvas.setFillColor(colors.black)
+            canvas.setFont(self.FONT_BOLD, max(6, int(self.BASE_LABEL_FONT_SIZE * best_found['scale'])))
+            canvas.drawCentredString(left + (usable_w / 4.0), sig_bottom + sig_area_h_local + sig_header_h_local / 2.0 - 2, "ASSINATURA DO COMANDANTE")
+            canvas.drawCentredString(mid + (usable_w / 4.0), sig_bottom + sig_area_h_local + sig_header_h_local / 2.0 - 2, "ASSINATURA DO TÉCNICO")
+
+            canvas.setLineWidth(self.LINE_WIDTH)
+            canvas.rect(left, sig_bottom, usable_w / 2.0, sig_total_h_local, stroke=1, fill=0)
+            canvas.rect(mid, sig_bottom, usable_w / 2.0, sig_total_h_local, stroke=1, fill=0)
+            eps = 0.4
+            canvas.line(mid, sig_bottom - eps, mid, sig_bottom + sig_total_h_local + eps)
+
+            canvas.restoreState()
+
+        def on_page_template(canvas, doc_local):
+            draw_header(canvas, doc_local)
+            draw_signatures_and_footer(canvas, doc_local)
+            try:
+                canvas.saveState()
+                canvas.setFont(self.FONT_REGULAR, 7)
+                canvas.setFillColor(colors.HexColor('#666666'))
+                y_page = doc_local.bottomMargin - (0.04 * inch)
+                if y_page < 6:
+                    y_page = 6
+                canvas.drawCentredString(MARG + usable_w / 2.0, y_page, f"Página {canvas.getPageNumber()}")
+                canvas.restoreState()
+            except Exception:
+                pass
+
+        template = PageTemplate(id='normal', frames=[content_frame], onPage=on_page_template)
+        doc.addPageTemplates([template])
+
+        doc.build(story)
+        pdf_buffer.seek(0)
+        return pdf_buffer, saved_report_id
+
+    def get_filename(self, report_request, equipments_list):
         equip_name_for_file = ''
+        try:
+            if equipments_list and len(equipments_list) > 0:
+                e0 = equipments_list[0]
+                if isinstance(e0, dict):
+                    equip_name_for_file = e0.get('equipamento') or e0.get('Equipamento') or ''
+                else:
+                    equip_name_for_file = str(e0)
+            if not equip_name_for_file:
+                equip_name_for_file = report_request.EQUIPAMENTO or ''
+            equip_name_for_file = str(equip_name_for_file).strip().replace(' ', '_').replace('/', '-')
+        except Exception:
+            equip_name_for_file = ''
 
-    safe_ship = (report_request.NAVIO or 'Geral').replace(' ', '_')
-    date_str = datetime.utcnow().strftime('%Y%m%d')
-    filename = f"RS_{date_str}_{safe_ship}"
-    if equip_name_for_file:
-        filename = f"{filename}_{equip_name_for_file}"
-    filename = f"{filename}.pdf"
+        safe_ship = (report_request.NAVIO or 'Geral').replace(' ', '_')
+        date_str = datetime.utcnow().strftime('%Y%m%d')
+        filename = f"RS_{date_str}_{safe_ship}"
+        if equip_name_for_file:
+            filename = f"{filename}_{equip_name_for_file}"
+        filename = f"{filename}.pdf"
 
-    resp: Response = send_file(pdf_buffer, mimetype='application/pdf', as_attachment=True, download_name=filename)
-    try:
-        resp.headers['X-Report-Id'] = str(saved_report_id)
-    except Exception:
-        logger.info("Não foi possível setar header X-Report-Id")
-    return resp
-
-# Initialize DB on import/startup so WSGI servers have DB ready
-try:
-    init_db()
-except Exception as e:
-    logger.exception("Falha ao inicializar DB: %s", e)
-
-if __name__ == '__main__':
-    app.run(debug=os.environ.get('FLASK_DEBUG', 'False').lower() == 'true')
+        return filename
