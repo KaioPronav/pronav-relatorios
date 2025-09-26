@@ -60,7 +60,7 @@ class PDFService:
         self.SMALL_PAD = 2
         self.MED_PAD = 3
         self.BASE_TITLE_FONT_SIZE = 9.5
-        self.BASE_LABEL_FONT_SIZE = 8.5
+        self.BASE_LABEL_FONT_SIZE = 8.0
         self.BASE_VALUE_FONT_SIZE = 8.1
 
     def setup_fonts(self):
@@ -984,7 +984,7 @@ class PDFService:
             y_row0 = y_top - header_row0
             y_row1 = y_row0 - header_row
             y_row2 = y_row1 - header_row
-            y_row3 = y_row2 - header_row
+            y_row3 = y_row2 - header_row  # == bottom_y
 
             canvas.line(logo_x1, y_row0, right_x, y_row0)
             canvas.line(logo_x1, y_row1, right_x, y_row1)
@@ -1014,15 +1014,10 @@ class PDFService:
             col_x3 = col_x2 + col2_w
             col_x4 = col_x3 + col3_w
 
-            offset_left_line = 2.0
-            offset_right_line = 4.0
-            canvas.line(col_x1, bottom_y, col_x1, top_y)
-            canvas.line(col_x2 + offset_left_line, bottom_y, col_x2 + offset_left_line, top_y)
-            canvas.line(col_x3 + offset_right_line, bottom_y, col_x3 + offset_right_line, top_y)
+            # baseline inferior do header (igual ao y_row3)
+            canvas.line(left_x, y_row3, right_x, y_row3)
 
-            canvas.line(left_x, bottom_y, right_x, bottom_y)
-
-            # contact line
+            # contact line (linha de contato/rodapé pequeno acima do cabeçalho)
             try:
                 contact_line = "PRONAV COMÉRCIO E SERVIÇOS LTDA.   |   CNPJ: 56.286.063/0001-46   |   Tel.: (22) 2141-2458   |   Cel.: (22) 99221-1893   |   service@pronav.com.br   |   www.pronav.com.br"
                 contact_font_size = max(7, int(7 * best_found['scale']))
@@ -1070,7 +1065,7 @@ class PDFService:
                             logo_w *= factor
                             logo_h *= factor
                         logo_x = logo_x0 + (square_side - logo_w) / 2.0
-                        logo_y = bottom_y + (header_height_base - logo_h) / 2.0
+                        logo_y = y_row3 + (header_height_base - logo_h) / 2.0
                         canvas.drawImage(img_reader, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
                         logo_drawn = True
                     except Exception:
@@ -1098,7 +1093,7 @@ class PDFService:
                                     logo_w *= factor
                                     logo_h *= factor
                                 logo_x = logo_x0 + (square_side - logo_w) / 2.0
-                                logo_y = bottom_y + (header_height_base - logo_h) / 2.0
+                                logo_y = y_row3 + (header_height_base - logo_h) / 2.0
                                 canvas.drawImage(img_reader, logo_x, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask='auto')
                                 logo_drawn = True
                         except Exception:
@@ -1111,7 +1106,7 @@ class PDFService:
                     fsize = max(12, int(10 * best_found['scale']))
                     canvas.setFont(self.FONT_BOLD, fsize)
                     canvas.setFillColor(colors.HexColor('#333333'))
-                    canvas.drawCentredString(logo_x0 + square_side/2.0, bottom_y + header_height_base/2.0 - (fsize/4.0), "PRONAV")
+                    canvas.drawCentredString(logo_x0 + square_side/2.0, y_row3 + header_height_base/2.0 - (fsize/4.0), "PRONAV")
                     canvas.setFillColor(colors.black)
                 except Exception:
                     pass
@@ -1147,30 +1142,111 @@ class PDFService:
             label_font = max(7, int(self.BASE_LABEL_FONT_SIZE * best_found['scale']))
             value_font = label_font  # mantém MESMO tamanho entre labels e values
 
+            # --- calcula a posição comum do divisor vertical alinhada ao rótulo "CONTATO:" ---
+            contact_label = labels_left[1]  # "CONTATO:"
+            label_left_padding = 2
+            contact_label_w = canvas.stringWidth(contact_label, self.FONT_BOLD, label_font)
+            divider_gap_after_label = 2.0
+            divider_x_common = col_x0 + label_left_padding + contact_label_w + divider_gap_after_label
+
+            # desenha o divisor vertical do bloco esquerdo EXATAMENTE de y_row0 até y_row3
+            canvas.setLineWidth(0.6)
+            canvas.setStrokeColor(colors.black)
+            canvas.line(divider_x_common, y_row3, divider_x_common, y_row0)
+
+            # restaura/divisores do lado direito (CLIENTE / OBRA / OS) — preservados e EXATAMENTE de y_row3 até y_row0
+            offset_left_line = 2.0
+            offset_right_line = 4.0
+            canvas.line(col_x2 + offset_left_line, y_row3, col_x2 + offset_left_line, y_row0)
+            canvas.line(col_x3 + offset_right_line, y_row3, col_x3 + offset_right_line, y_row0)
+
+            # start x where left-value text should begin (a partir do divisor comum)
+            value_gap_after_divider = 2  # texto começa logo após a linha (pequeno gap)
+            value_start_base = divider_x_common + value_gap_after_divider
+
             for i in range(3):
                 top = rows_y[i]
                 bottom = rows_y[i + 1]
                 center_y = (top + bottom) / 2.0 - 3
 
+                # --- LABEL (começa próximo da borda esquerda) ---
                 canvas.setFont(self.FONT_BOLD, label_font)
                 canvas.setFillColor(colors.black)
-                canvas.drawString(col_x0 + left_label_padding, center_y, labels_left[i])
+                _label_text = (labels_left[i] or '').strip()
 
+                label_left_padding = 2
+                label_x = col_x0 + label_left_padding
+                _label_max_w = max(8, (col_x2) - label_x - 6)
+                if canvas.stringWidth(_label_text, self.FONT_BOLD, label_font) > _label_max_w:
+                    while _label_text and canvas.stringWidth(_label_text + '…', self.FONT_BOLD, label_font) > _label_max_w:
+                        _label_text = _label_text[:-1]
+                    _label_text = (_label_text + '…') if _label_text else ''
+                canvas.drawString(label_x, center_y, _label_text)
+
+                # --- VALOR ESQUERDO: começa logo após o divisor comum ---
                 canvas.setFont(self.FONT_REGULAR, value_font)
-                canvas.drawString(col_x1 + left_value_padding, center_y, values_left[i])
+                _left_value_text = (values_left[i] or '').strip()
 
+                value_start_x = value_start_base
+                _left_available = max(10, (col_x2) - value_start_x - 2)
+
+                # --- SHRINK-TO-FIT: reduz tamanho da fonte até caber (fallback: trunc + '…') ---
+                font_name = self.FONT_REGULAR
+                cur_font = float(value_font)
+                min_font = 6.0
+                text_to_draw = _left_value_text or ''
+
+                # primeiro assegura fonte inicial
+                canvas.setFont(font_name, cur_font)
+
+                if canvas.stringWidth(text_to_draw, font_name, cur_font) > _left_available:
+                    # reduz progressivamente (passo 0.5) até caber ou atingir min_font
+                    while cur_font > min_font and canvas.stringWidth(text_to_draw, font_name, cur_font) > _left_available:
+                        cur_font -= 0.5
+                    canvas.setFont(font_name, cur_font)
+                    # se mesmo assim não couber, faz truncamento com reticências
+                    if canvas.stringWidth(text_to_draw, font_name, cur_font) > _left_available:
+                        while text_to_draw and canvas.stringWidth(text_to_draw + '…', font_name, cur_font) > _left_available:
+                            text_to_draw = text_to_draw[:-1]
+                        text_to_draw = (text_to_draw + '…') if text_to_draw else ''
+                else:
+                    # já cabe com font original
+                    canvas.setFont(font_name, cur_font)
+
+                canvas.drawString(value_start_x, center_y, text_to_draw)
+                # restaura fonte padrão para próximos usos
+                canvas.setFont(self.FONT_REGULAR, value_font)
+
+                # --- coluna direita (mantém comportamento anterior mas com shrink-to-fit também) ---
                 canvas.setFont(self.FONT_BOLD, label_font)
                 canvas.drawString(col_x2 + right_label_padding, center_y, labels_right[i])
                 canvas.setFont(self.FONT_REGULAR, value_font)
 
-                value_text = values_right[i] or ''
-                if canvas.stringWidth(value_text, self.FONT_REGULAR, value_font) > max_width:
-                    while value_text and canvas.stringWidth(value_text + '…', self.FONT_REGULAR, value_font) > max_width:
-                        value_text = value_text[:-1]
-                    value_text = (value_text + '…') if value_text else ''
+                value_text = (values_right[i] or '')
+                # largura disponível para o valor direito
+                _right_available = max(10, max_width)
+
+                # shrink-to-fit para o valor direito
+                font_name_r = self.FONT_REGULAR
+                cur_font_r = float(value_font)
+                text_to_draw_r = value_text or ''
+
+                canvas.setFont(font_name_r, cur_font_r)
+                if canvas.stringWidth(text_to_draw_r, font_name_r, cur_font_r) > _right_available:
+                    while cur_font_r > min_font and canvas.stringWidth(text_to_draw_r, font_name_r, cur_font_r) > _right_available:
+                        cur_font_r -= 0.5
+                    canvas.setFont(font_name_r, cur_font_r)
+                    if canvas.stringWidth(text_to_draw_r, font_name_r, cur_font_r) > _right_available:
+                        while text_to_draw_r and canvas.stringWidth(text_to_draw_r + '…', font_name_r, cur_font_r) > _right_available:
+                            text_to_draw_r = text_to_draw_r[:-1]
+                        text_to_draw_r = (text_to_draw_r + '…') if text_to_draw_r else ''
+                else:
+                    canvas.setFont(font_name_r, cur_font_r)
 
                 value_x = col_x3 + right_value_padding
-                canvas.drawString(value_x, center_y, value_text)
+                canvas.drawString(value_x, center_y, text_to_draw_r)
+                # restaura fonte padrão
+                canvas.setFont(self.FONT_REGULAR, value_font)
 
             canvas.restoreState()
 
