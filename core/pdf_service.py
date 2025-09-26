@@ -725,20 +725,23 @@ class PDFService:
                             at_lc[k.lower()] = v
 
                     origem = (at_lc.get('origem') or
-                            at_lc.get('local_origem') or
-                            at_lc.get('origem_local'))
+                              at_lc.get('local_origem') or
+                              at_lc.get('origem_local'))
                     destino = (at_lc.get('destino') or
-                            at_lc.get('local_destino') or
-                            at_lc.get('destino_local'))
+                               at_lc.get('local_destino') or
+                               at_lc.get('destino_local'))
 
+                    # >>> ALTERAÇÃO: não forçar maiúsculas na DESCRIÇÃO (preservar como veio do frontend)
                     if origem and destino:
-                        od = f"{ensure_upper_safe(str(origem))} x {ensure_upper_safe(str(destino))}"
+                        od = f"{(str(origem))} x {(str(destino))}"
                         if descricao_raw:
-                            descricao_final = f"{ensure_upper_safe(descricao_raw)} — {od}"
+                            # mantemos ORIGEM x DESTINO em maiúsculas, mas deixamos a DESCRIÇÃO com o caso original
+                            descricao_final = f"{descricao_raw} — {od}"
                         else:
                             descricao_final = od
                     else:
-                        descricao_final = ensure_upper_safe(descricao_raw)
+                        # preserva exatamente a string enviada no frontend (sem upper)
+                        descricao_final = descricao_raw
 
                     if str(tipo).lower() == "mão-de-obra-técnica":
                         descricao_final = "Mão-de-Obra-Técnica"
@@ -750,8 +753,7 @@ class PDFService:
                     c2 = shrink_paragraph_to_fit(tipo, styles['response'], col_widths[2] - 6, max_h_cell)
                     c3 = shrink_paragraph_to_fit(descricao_final, styles['response'], col_widths[3] - 6, max_h_cell)
                     c4 = shrink_paragraph_to_fit(km_final, styles['response'], col_widths[4] - 6, max_h_cell)
-                    nome1 = str(at.get('TECNICO1') or '').replace(" ", "\u00A0")
-                    nome2 = str(at.get('TECNICO2') or '').replace(" ", "\u00A0")
+
 
                     # força nome+sobrenome sem quebra usando espaço não separável
                     def make_tech_name(raw):
