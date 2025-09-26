@@ -57,11 +57,18 @@ class PDFService:
         self.LINE_WIDTH = 0.6
         self.GRAY = colors.HexColor('#D9D9D9')
         # pads compactos para economizar espaço
-        self.SMALL_PAD = 2
-        self.MED_PAD = 3
-        self.BASE_TITLE_FONT_SIZE = 9.5
-        self.BASE_LABEL_FONT_SIZE = 8.0
-        self.BASE_VALUE_FONT_SIZE = 8.1
+        self.SMALL_PAD = getattr(self.config, 'SMALL_PAD', 2)
+        self.MED_PAD = getattr(self.config, 'MED_PAD', 3)
+
+        # Font base agora vindo de config (totalmente configurável)
+        self.BASE_TITLE_FONT_SIZE = float(getattr(self.config, 'TITLE_FONT_SIZE', 9.5))
+        self.BASE_LABEL_FONT_SIZE = float(getattr(self.config, 'LABEL_FONT_SIZE', 8.0))
+        self.BASE_VALUE_FONT_SIZE = float(getattr(self.config, 'VALUE_FONT_SIZE', 8.1))
+
+        # se unificar fontes com header estiver ativado, aplica aqui
+        if getattr(self.config, 'UNIFY_FONTS_WITH_HEADER', True):
+            self.BASE_LABEL_FONT_SIZE = float(self.BASE_TITLE_FONT_SIZE)
+            self.BASE_VALUE_FONT_SIZE = float(self.BASE_TITLE_FONT_SIZE)
 
     def setup_fonts(self):
         self.FONT_REGULAR = 'Helvetica'
@@ -140,11 +147,6 @@ class PDFService:
         footer_h_base = 0.24 * inch  # leve aumento p/ legibilidade
         footer_total_height_base = footer_h_base + sig_header_h_base + sig_area_h_base
 
-        # scaling bounds
-        MIN_SCALE = float(getattr(self.config, 'MIN_SCALE', 0.55))
-        MAX_SCALE = 1.0
-        margin_reduction_factors = [1.0, 0.9, 0.8, 0.7]
-
         # -------------------------------
         # Helpers: normalization and logo finding
         # -------------------------------
@@ -211,81 +213,88 @@ class PDFService:
                 pass
             return None
 
-        def make_styles(scale=1.0):
-            base_title = max(6.0, self.BASE_TITLE_FONT_SIZE * scale)
-            base_label = max(6.0, self.BASE_LABEL_FONT_SIZE * scale)
-            base_value = max(6.0, self.BASE_VALUE_FONT_SIZE * scale)
+        def make_styles():
+            """Cria estilos usando os tamanhos definidos em self (sem scaling)."""
+            base_title = max(6.0, self.BASE_TITLE_FONT_SIZE)
+            base_label = max(6.0, self.BASE_LABEL_FONT_SIZE)
+            base_value = max(6.0, self.BASE_VALUE_FONT_SIZE)
 
             try:
                 resp_mult = float(getattr(self.config, 'RESPONSE_VALUE_MULTIPLIER', 1.0))
             except Exception:
                 resp_mult = 1.0
             try:
-                label_mult = float(getattr(self.config, 'LABEL_VALUE_MULTIPLIER', 1.05))
+                label_mult = float(getattr(self.config, 'LABEL_VALUE_MULTIPLIER', 1.0))
             except Exception:
-                label_mult = 1.05
+                label_mult = 1.0
 
             response_sz = max(6.0, float(base_value) * resp_mult)
             label_sz = max(6.0, float(base_label) * label_mult)
             title_sz = max(7.0, base_title * 1.0)
 
-            pad_small = max(1, int(max(1, self.SMALL_PAD * scale)))
-            pad_med = max(1, int(max(1, self.MED_PAD * scale)))
+            pad_small = max(0, int(max(0, self.SMALL_PAD)))   # permitir 0
+            pad_med = max(0, int(max(0, self.MED_PAD)))
 
             styles = getSampleStyleSheet()
 
-            styles.add(ParagraphStyle(
-                name='TitleCenter',
+            # --- helper para adicionar ou atualizar um estilo existente ---
+            def add_or_update(name, **kwargs):
+                if name in styles:
+                    s = styles[name]
+                    for k, v in kwargs.items():
+                        setattr(s, k, v)
+                else:
+                    styles.add(ParagraphStyle(name=name, **kwargs))
+
+            add_or_update('TitleCenter',
                 fontName=self.FONT_BOLD,
                 fontSize=title_sz,
                 alignment=1,
                 leading=max(8, title_sz * 1.15)
-            ))
+            )
 
-            styles.add(ParagraphStyle(
-                name='label',
+            add_or_update('label',
                 fontName=self.FONT_BOLD,
                 fontSize=label_sz,
                 leading=max(7, label_sz * 1.05),
                 alignment=0,
                 spaceAfter=2,
                 spaceBefore=2
-            ))
+            )
 
-            styles.add(ParagraphStyle(
-                name='response',
+            # response: atualiza caso já exista (evita KeyError)
+            add_or_update('response',
                 fontName=self.FONT_REGULAR,
                 fontSize=response_sz,
                 leading=max(7, response_sz * 1.06),
                 alignment=0,
+                wordWrap='CJK',    # impede quebra em espaços simples
                 spaceAfter=0,
                 spaceBefore=0
-            ))
+            )
 
-            styles.add(ParagraphStyle(
-                name='label_center',
+            add_or_update('label_center',
                 fontName=self.FONT_BOLD,
                 fontSize=label_sz,
                 leading=max(7, label_sz * 1.05),
                 alignment=1,
                 spaceAfter=2,
                 spaceBefore=2
-            ))
+            )
 
-            styles.add(ParagraphStyle(
-                name='response_center',
+            add_or_update('response_center',
                 fontName=self.FONT_REGULAR,
                 fontSize=response_sz,
                 leading=max(7, response_sz * 1.06),
                 alignment=1,
                 spaceAfter=0,
                 spaceBefore=0
-            ))
+            )
 
-            styles.add(ParagraphStyle(name='td', fontName=self.FONT_REGULAR, fontSize=response_sz, leading=max(7, response_sz * 1.06), alignment=0, spaceBefore=0, spaceAfter=0))
-            styles.add(ParagraphStyle(name='td_left', fontName=self.FONT_REGULAR, fontSize=response_sz, alignment=0, leading=max(7, response_sz * 1.06), spaceBefore=0, spaceAfter=0))
-            styles.add(ParagraphStyle(name='td_right', fontName=self.FONT_REGULAR, fontSize=response_sz, alignment=0, leading=max(7, response_sz * 1.06), spaceBefore=0, spaceAfter=0))
-            styles.add(ParagraphStyle(name='sec_title', fontName=self.FONT_BOLD, fontSize=label_sz, alignment=0, leading=max(7, label_sz * 1.05), spaceAfter=2, spaceBefore=2))
+            add_or_update('td', fontName=self.FONT_REGULAR, fontSize=response_sz, leading=max(7, response_sz * 1.06), alignment=0, spaceBefore=0, spaceAfter=0)
+            add_or_update('td_left', fontName=self.FONT_REGULAR, fontSize=response_sz, alignment=0, leading=max(7, response_sz * 1.06), spaceBefore=0, spaceAfter=0)
+            add_or_update('td_right', fontName=self.FONT_REGULAR, fontSize=response_sz, alignment=0, leading=max(7, response_sz * 1.06), spaceBefore=0, spaceAfter=0)
+            add_or_update('sec_title', fontName=self.FONT_BOLD, fontSize=label_sz, alignment=0, leading=max(7, label_sz * 1.05), spaceAfter=2, spaceBefore=2)
 
             try:
                 service_mult = float(getattr(self.config, 'SERVICE_VALUE_MULTIPLIER', 1.20))
@@ -293,9 +302,10 @@ class PDFService:
                 service_mult = 1.20
             svc_sz = max(response_sz, int(response_sz * service_mult))
             svc_sz = max(6.0, svc_sz)
-            styles.add(ParagraphStyle(name='section_value_large', fontName=self.FONT_REGULAR, fontSize=svc_sz, leading=max(8, svc_sz * 1.06), alignment=0, spaceAfter=0, spaceBefore=0))
+            add_or_update('section_value_large', fontName=self.FONT_REGULAR, fontSize=svc_sz, leading=max(8, svc_sz * 1.06), alignment=0, spaceAfter=0, spaceBefore=0)
 
             return styles, pad_small, pad_med
+
 
         # constrói o story; frame_height opcional para detectar quebras e ajustar a primeira parte
         def build_story(styles, pad_small, pad_med, usable_w, frame_height=None):
@@ -307,23 +317,9 @@ class PDFService:
             story_local.append(Spacer(1, 0.002 * inch))
 
             def shrink_paragraph_to_fit(text, base_style, max_w, max_h, min_font=6):
+                # OBS: removemos o comportamento de autoscaling. Sempre retornamos Paragraph
                 txt = str(text or '')
-                base_text_for_try = self.sanitize_for_paragraph(txt)
-                for try_size in range(int(getattr(base_style, 'fontSize', 10)), min_font - 1, -1):
-                    tmp_style = deepcopy(base_style)
-                    tmp_style.fontSize = try_size
-                    tmp_style.leading = max(try_size * 1.04, (tmp_style.leading if hasattr(tmp_style, 'leading') else try_size * 1.06))
-                    p = Paragraph(base_text_for_try, tmp_style)
-                    try:
-                        w, h = p.wrap(max_w, max_h)
-                    except Exception:
-                        continue
-                    if h <= max_h:
-                        return p
-                tmp_style = deepcopy(base_style)
-                tmp_style.fontSize = min_font
-                tmp_style.leading = min_font * 1.04
-                return Paragraph(self.sanitize_for_paragraph(txt), tmp_style)
+                return Paragraph(self.sanitize_for_paragraph(txt), base_style)
 
             def _get(e, *keys):
                 if not isinstance(e, dict):
@@ -392,7 +388,7 @@ class PDFService:
                 Paragraph("FABRICANTE", styles['label_center']),
                 Paragraph("MODELO", styles['label_center']),
                 Paragraph("Nº DE SÉRIE", styles['label_center'])
-            ]]
+            ]] 
 
             # para EQUIPAMENTO/FABRICANTE/MODELO/Nº DE SÉRIE mantemos proporção fixa: 4 colunas iguais
             equip_col = usable_w / 4.0
@@ -411,7 +407,7 @@ class PDFService:
                                             styles['response'], equip_cols[1] - 2 * equip_left_pad, inner_max_h)
                 c2 = shrink_paragraph_to_fit(ensure_upper_safe(str(_get(eq, 'modelo', 'MODELO') or '')),
                                             styles['response'], equip_cols[2] - 2 * equip_left_pad, inner_max_h)
-                c3 = shrink_paragraph_to_fit(ensure_upper_safe(str(_get(eq, 'numero_serie', 'NUMERO_SERIE') or '')),
+                c3 = shrink_paragraph_to_fit(ensure_upper_safe(str(_get(eq, 'numero_serie', 'NUMERO_DE_SERIE') or '')),
                                             styles['response'], equip_cols[3] - 2 * equip_left_pad, inner_max_h)
                 equip_data.append([c0, c1, c2, c3])
 
@@ -502,7 +498,7 @@ class PDFService:
                 ]))
 
                 # Se frame_height foi fornecido, tentamos dividir a tabela,
-                # mas NORMALIZANDO para evitar duplicação de linha na quebra
+                # lógica de split existente continuará funcionando sem scaling
                 if frame_height is not None:
                     used_before = self.estimate_height(story_local, usable_w, frame_height)
                     remaining_space = frame_height - used_before
@@ -521,7 +517,7 @@ class PDFService:
                         if remaining_space_for_table <= 0:
                             parts = [(content_tbl, getattr(content_tbl, '_cellvalues', None) or [])]
                         else:
-                            # --- NOVA LÓGICA DE SPLIT (RESERVA ESPAÇO PARA HR + TÍTULO DE CONTINUAÇÃO) ---
+                            # reserva espaço para linha HR e título de continuação
                             try:
                                 hr_height_pts = 1.0 + float(self.LINE_WIDTH) + 1.0
                             except Exception:
@@ -532,11 +528,11 @@ class PDFService:
                                 cont_par_tmp = Paragraph(cont_title_text_tmp, styles['label'])
                                 w_ct, cont_title_h = cont_par_tmp.wrap(usable_w, frame_height)
                             except Exception:
-                                cont_title_h = (self.BASE_LABEL_FONT_SIZE * best_found['scale']) * 1.2
+                                cont_title_h = (self.BASE_LABEL_FONT_SIZE) * 1.2
 
                             safety_margin = 4.0
                             reserve_space = hr_height_pts + cont_title_h + safety_margin
-                            min_row_estimate = max(10.0, (self.BASE_VALUE_FONT_SIZE * best_found['scale']) * 0.8)
+                            min_row_estimate = max(10.0, (self.BASE_VALUE_FONT_SIZE) * 0.8)
 
                             if remaining_space_for_table <= (reserve_space + min_row_estimate):
                                 parts = [(content_tbl, getattr(content_tbl, '_cellvalues', None) or [])]
@@ -634,12 +630,19 @@ class PDFService:
                     story_local.append(content_tbl)
                     story_local.append(Spacer(1, 0.04 * inch))
                 else:
+                    # Coloca a primeira parte na página atual
                     story_local.append(title_tbl)
                     story_local.append(parts[0][0])
 
+                    # desenha a linha de corte no final da página atual
                     hr = HR(width=usable_w, thickness=self.LINE_WIDTH, pad_top=1, pad_bottom=1)
                     story_local.append(hr)
 
+                    # FORÇAR quebra de página para garantir que o título "CONTINUAÇÃO"
+                    # e o conteúdo restante comecem na nova página
+                    story_local.append(PageBreak())
+
+                    # agora adiciona o título de continuação e as partes restantes
                     cont_title_text = f"{idx}. {title} - CONTINUAÇÃO"
                     cont_title_par = Paragraph(cont_title_text, styles['label'])
                     cont_title_tbl = Table([[cont_title_par]], colWidths=[usable_w])
@@ -658,7 +661,8 @@ class PDFService:
                         story_local.append(p_part[0])
                     story_local.append(Spacer(1, 0.04 * inch))
 
-            # Activities table (mantive as regras anteriores)
+
+            # Activities table (mantive como antes, sem autoscaling)
             if atividades_list:
                 proportions = [0.09, 0.12, 0.24, 0.45, 0.05, 0.04, 0.04]
                 try:
@@ -707,15 +711,12 @@ class PDFService:
                     data_br = format_date_br(at.get('DATA')) if at.get('DATA') else ''
                     hora_comb = at.get('HORA') or ''
                     tipo = at.get('TIPO') or ''
-                        # --- leitura e normalização da descrição ---
                     descricao_raw = (at.get('DESCRICAO') or '').strip()
-                    # considera como vazia placeholders comuns
                     if descricao_raw.upper() in ('', 'X', '-', '—'):
                         descricao_raw = ''
 
                     km_final = at.get('KM') or ''
 
-                    # --- normaliza chaves em lowercase para achar origem/destino ---
                     at_lc = {}
                     if isinstance(at, dict):
                         for k, v in at.items():
@@ -730,22 +731,18 @@ class PDFService:
                             at_lc.get('local_destino') or
                             at_lc.get('destino_local'))
 
-                    # --- monta a string final sem adicionar travessão desnecessário ---
                     if origem and destino:
                         od = f"{ensure_upper_safe(str(origem))} x {ensure_upper_safe(str(destino))}"
                         if descricao_raw:
                             descricao_final = f"{ensure_upper_safe(descricao_raw)} — {od}"
                         else:
-                            # se não há descrição válida, use apenas origem x destino
                             descricao_final = od
                     else:
                         descricao_final = ensure_upper_safe(descricao_raw)
 
-                    # tratamento específico para tipo "mão-de-obra-técnica" (mantido)
                     if str(tipo).lower() == "mão-de-obra-técnica":
                         descricao_final = "Mão-de-Obra-Técnica"
                         km_final = ""
-
 
                     max_h_cell = 0.7 * inch
                     c0 = shrink_paragraph_to_fit(str(data_br or ''), styles['response'], col_widths[0] - 6, max_h_cell)
@@ -753,8 +750,25 @@ class PDFService:
                     c2 = shrink_paragraph_to_fit(tipo, styles['response'], col_widths[2] - 6, max_h_cell)
                     c3 = shrink_paragraph_to_fit(descricao_final, styles['response'], col_widths[3] - 6, max_h_cell)
                     c4 = shrink_paragraph_to_fit(km_final, styles['response'], col_widths[4] - 6, max_h_cell)
-                    c5 = shrink_paragraph_to_fit(str(at.get('TECNICO1') or ''), styles['response'], col_widths[5] - 6, max_h_cell)
-                    c6 = shrink_paragraph_to_fit(str(at.get('TECNICO2') or ''), styles['response'], col_widths[6] - 6, max_h_cell)
+                    nome1 = str(at.get('TECNICO1') or '').replace(" ", "\u00A0")
+                    nome2 = str(at.get('TECNICO2') or '').replace(" ", "\u00A0")
+
+                    # força nome+sobrenome sem quebra usando espaço não separável
+                    def make_tech_name(raw):
+                        s = str(raw or '').strip()
+                        if not s:
+                            return ''
+                        # substitui espaços por NBSP (impede quebra entre nomes)
+                        # se preferir, limitar apenas ao primeiro espaço: s = s.replace(' ', '\u00A0', 1)
+                        return s.replace(' ', '\u00A0')
+
+                    nome_tec1 = make_tech_name(at.get('TECNICO1'))
+                    nome_tec2 = make_tech_name(at.get('TECNICO2'))
+
+                    c5 = shrink_paragraph_to_fit(nome_tec1, styles['response'], col_widths[5] - 6, max_h_cell)
+                    c6 = shrink_paragraph_to_fit(nome_tec2, styles['response'], col_widths[6] - 6, max_h_cell)
+
+
 
                     data.append([c0, c1, c2, c3, c4, c5, c6])
 
@@ -767,185 +781,38 @@ class PDFService:
                     ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                     ('BOX', (0,0), (-1,-1), self.LINE_WIDTH, colors.black),
                     ('GRID', (0,0), (-1,-1), self.LINE_WIDTH / 2.0, colors.black),
-                    ('LEFTPADDING', (0,0), (-1,-1), pad_small),
-                    ('RIGHTPADDING', (0,0), (-1,-1), pad_small),
-                    ('TOPPADDING', (0,0), (-1,-1), 1),
-                    ('BOTTOMPADDING', (0,0), (-1,-1), 1),
+                    ('LEFTPADDING', (0,0), (-1,-1), 1),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 1),
+                    ('TOPPADDING', (0,0), (-1,-1), 2),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 2),
                     ('SPAN', (5,0), (6,0)),
                 ]))
                 story_local.append(activities_table)
 
             return story_local
 
-        def split_text_into_chunks_for_row(text, style, max_w, max_row_h, min_chunk_chars=20):
-            out = []
-            remaining = str(text or '')
-            from reportlab.platypus import Paragraph
-            while remaining:
-                try:
-                    p = Paragraph(self.sanitize_for_paragraph(remaining), style)
-                    w, h = p.wrap(max_w, max_row_h)
-                except Exception:
-                    h = max_row_h + 1
-                if h <= max_row_h:
-                    out.append(remaining)
-                    break
-                lo = min_chunk_chars
-                hi = len(remaining)
-                best = None
-                while lo <= hi:
-                    mid = (lo + hi) // 2
-                    cand = remaining[:mid].rstrip()
-                    try:
-                        cand_p = Paragraph(self.sanitize_for_paragraph(cand), style)
-                        w_c, h_c = cand_p.wrap(max_w, max_row_h)
-                    except Exception:
-                        h_c = max_row_h + 1
-                    if h_c <= max_row_h:
-                        best = mid
-                        lo = mid + 1
-                    else:
-                        hi = mid - 1
-                if not best:
-                    best = max(1, min_chunk_chars)
-                chunk = remaining[:best].rstrip()
-                if ' ' in chunk:
-                    last_space = chunk.rfind(' ')
-                    if last_space >= int(best * 0.4):
-                        chunk = chunk[:last_space].rstrip()
-                out.append(chunk)
-                remaining = remaining[len(chunk):].lstrip()
-                if len(out) > 500:
-                    out.append(remaining[:200] + '…')
-                    break
-            return out
-
-        # Find best scale/margins (busca simples)
-        best_found = {
-            'fit': False,
-            'scale': 1.0,
-            'top_margin': preserved_top_margin_base,
-            'bottom_margin': preserved_bottom_margin_base,
-            'usable_w': PAGE_W - 2 * MARG,
-            'frame_height': 0.0,
-            'story': None,
-            'styles': None,
-            'pad_small': None,
-            'pad_med': None
-        }
-
+        # -------------------------------
+        # Sem busca por scale: usamos tamanhos fixos vindos do config
+        # -------------------------------
         original_usable_w = PAGE_W - 2 * MARG
+        usable_w = original_usable_w
 
-        for m_factor in margin_reduction_factors:
-            preserved_top_margin = preserved_top_margin_base * m_factor
-            preserved_bottom_margin = preserved_bottom_margin_base * m_factor
-
-            usable_w = original_usable_w
-            frame_top = PAGE_H - preserved_top_margin - header_height_base
-            frame_bottom = preserved_bottom_margin + footer_total_height_base
-            frame_height = frame_top - frame_bottom
-            if frame_height <= 0:
-                continue
-
-            styles_test, ps, pm = make_styles(scale=MAX_SCALE)
-            story_test = build_story(styles_test, ps, pm, usable_w)
-            req = self.estimate_height(story_test, usable_w, frame_height)
-            if req <= frame_height:
-                best_found.update({
-                    'fit': True,
-                    'scale': MAX_SCALE,
-                    'top_margin': preserved_top_margin,
-                    'bottom_margin': preserved_bottom_margin,
-                    'usable_w': usable_w,
-                    'frame_height': frame_height,
-                    'story': story_test,
-                    'styles': styles_test,
-                    'pad_small': ps,
-                    'pad_med': pm
-                })
-                break
-            else:
-                found_story = found_styles = found_ps = found_pm = None
-                lo = MIN_SCALE
-                hi = MAX_SCALE
-                found_scale = None
-                for _ in range(12):
-                    mid = (lo + hi) / 2.0
-                    styles_mid, ps_mid, pm_mid = make_styles(scale=mid)
-                    story_mid = build_story(styles_mid, ps_mid, pm_mid, usable_w)
-                    req_mid = self.estimate_height(story_mid, usable_w, frame_height)
-                    if req_mid <= frame_height:
-                        found_scale = mid
-                        found_story = story_mid
-                        found_styles = styles_mid
-                        found_ps = ps_mid
-                        found_pm = pm_mid
-                        lo = mid
-                    else:
-                        hi = mid
-                    if (hi - lo) < 0.005:
-                        break
-                if found_scale:
-                    best_found.update({
-                        'fit': True,
-                        'scale': found_scale,
-                        'top_margin': preserved_top_margin,
-                        'bottom_margin': preserved_bottom_margin,
-                        'usable_w': usable_w,
-                        'frame_height': frame_height,
-                        'story': found_story,
-                        'styles': found_styles,
-                        'pad_small': found_ps,
-                        'pad_med': found_pm
-                    })
-                    break
-
-        if not best_found['fit']:
-            last_m_factor = margin_reduction_factors[-1]
-            preserved_top_margin = preserved_top_margin_base * last_m_factor
-            preserved_bottom_margin = preserved_bottom_margin_base * last_m_factor
-            usable_w = original_usable_w
-            frame_top = PAGE_H - preserved_top_margin - header_height_base
-            frame_bottom = preserved_bottom_margin + footer_total_height_base
-            frame_height = max(1.0 * inch, frame_top - frame_bottom)
-            styles_min, ps_min, pm_min = make_styles(scale=MIN_SCALE)
-            story_min = build_story(styles_min, ps_min, pm_min, usable_w, frame_height=frame_height)
-            best_found.update({
-                'fit': False,
-                'scale': MIN_SCALE,
-                'top_margin': preserved_top_margin,
-                'bottom_margin': preserved_bottom_margin,
-                'usable_w': usable_w,
-                'frame_height': frame_height,
-                'story': story_min,
-                'styles': styles_min,
-                'pad_small': ps_min,
-                'pad_med': pm_min
-            })
-
-        # escolha final
-        chosen_top_margin = best_found['top_margin']
-        chosen_bottom_margin = best_found['bottom_margin']
-        chosen_styles = best_found['styles']
-        chosen_pad_small = best_found['pad_small']
-        chosen_pad_med = best_found['pad_med']
-        usable_w = best_found['usable_w']
-        frame_top = PAGE_H - chosen_top_margin - header_height_base
-        frame_bottom = chosen_bottom_margin + footer_total_height_base
+        # calculo do frame com margens padrão (sem reduzir margens por scale)
+        preserved_top_margin = preserved_top_margin_base
+        preserved_bottom_margin = preserved_bottom_margin_base
+        frame_top = PAGE_H - preserved_top_margin - header_height_base
+        frame_bottom = preserved_bottom_margin + footer_total_height_base
         frame_height = max(1.0 * inch, frame_top - frame_bottom)
 
-        # final rebuild passando frame_height para detectar quebras corretamente
-        story = build_story(chosen_styles, chosen_pad_small, chosen_pad_med, usable_w, frame_height=frame_height)
-
-        # NÃO centralizamos verticalmente: sempre começamos logo abaixo do cabeçalho
-        vertical_offset = 0.0
+        styles, ps, pm = make_styles()
+        story = build_story(styles, ps, pm, usable_w, frame_height=frame_height)
 
         # Document e frame
         doc = BaseDocTemplate(pdf_buffer, pagesize=PAGE_SIZE,
                              leftMargin=MARG, rightMargin=MARG,
-                             topMargin=chosen_top_margin, bottomMargin=chosen_bottom_margin)
+                             topMargin=preserved_top_margin, bottomMargin=preserved_bottom_margin)
 
-        topPadding_val = max(4, int(4 + vertical_offset))  # padding pequeno e determinístico
+        topPadding_val = max(4, int(4))  # padding pequeno e determinístico
         content_frame = Frame(MARG, frame_bottom, usable_w, frame_height,
                               leftPadding=4, rightPadding=4, topPadding=topPadding_val, bottomPadding=4, id='content_frame')
 
@@ -1020,7 +887,7 @@ class PDFService:
             # contact line (linha de contato/rodapé pequeno acima do cabeçalho)
             try:
                 contact_line = "PRONAV COMÉRCIO E SERVIÇOS LTDA.   |   CNPJ: 56.286.063/0001-46   |   Tel.: (22) 2141-2458   |   Cel.: (22) 99221-1893   |   service@pronav.com.br   |   www.pronav.com.br"
-                contact_font_size = max(7, int(7 * best_found['scale']))
+                contact_font_size = max(7, int(self.BASE_VALUE_FONT_SIZE))
                 contact_y = top_y + (0.05 * inch)
                 canvas.setFont(self.FONT_REGULAR, contact_font_size)
                 canvas.setFillColor(colors.HexColor('#333333'))
@@ -1037,7 +904,7 @@ class PDFService:
             except Exception:
                 pass
 
-            title_font_size = max(9, int(self.BASE_TITLE_FONT_SIZE * best_found['scale']) + 1)
+            title_font_size = max(9, int(self.BASE_TITLE_FONT_SIZE))
             canvas.setFont(self.FONT_BOLD, title_font_size)
             canvas.drawCentredString((sep_x1 + sep_x2) / 2.0, y_row0 + (header_row0 / 2.0) - 3, "RELATÓRIO DE SERVIÇO")
 
@@ -1103,7 +970,7 @@ class PDFService:
 
             if not logo_drawn:
                 try:
-                    fsize = max(12, int(10 * best_found['scale']))
+                    fsize = max(12, int(10))
                     canvas.setFont(self.FONT_BOLD, fsize)
                     canvas.setFillColor(colors.HexColor('#333333'))
                     canvas.drawCentredString(logo_x0 + square_side/2.0, y_row3 + header_height_base/2.0 - (fsize/4.0), "PRONAV")
@@ -1111,7 +978,7 @@ class PDFService:
                 except Exception:
                     pass
 
-            # labels & values (font sizes made equal for labels and values)
+            # labels & values (font sizes made equal para labels/values conforme config)
             labels_left = ["NAVIO:", "CONTATO:", "LOCAL:"]
             values_left = [
                 ensure_upper_safe(getattr(report_request, 'NAVIO', '') or ''),
@@ -1138,8 +1005,8 @@ class PDFService:
 
             max_width = col_x4 - col_x3 - right_value_padding
 
-            # compute unified font sizes
-            label_font = max(7, int(self.BASE_LABEL_FONT_SIZE * best_found['scale']))
+            # compute unified font sizes (sem scaling)
+            label_font = max(7, int(self.BASE_LABEL_FONT_SIZE))
             value_font = label_font  # mantém MESMO tamanho entre labels e values
 
             # --- calcula a posição comum do divisor vertical alinhada ao rótulo "CONTATO:" ---
@@ -1157,8 +1024,23 @@ class PDFService:
             # restaura/divisores do lado direito (CLIENTE / OBRA / OS) — preservados e EXATAMENTE de y_row3 até y_row0
             offset_left_line = 2.0
             offset_right_line = 4.0
-            canvas.line(col_x2 + offset_left_line, y_row3, col_x2 + offset_left_line, y_row0)
-            canvas.line(col_x3 + offset_right_line, y_row3, col_x3 + offset_right_line, y_row0)
+                        # --- alinhar e "clamp" das linhas verticais para não extrapolar a página ---
+            def clamp_x(x):
+                return max(left_x, min(right_x, x))
+
+            offset_left_line = 2.0
+            offset_right_line = 4.0
+
+            x_vert_1 = clamp_x(col_x2 + offset_left_line)
+            x_vert_2 = clamp_x(col_x3 + offset_right_line)
+            # desenha as linhas verticais dentro dos limites da página
+            canvas.line(x_vert_1, y_row3, x_vert_1, y_row0)
+            canvas.line(x_vert_2, y_row3, x_vert_2, y_row0)
+
+            # desenha a linha divisória central (que você usava para separar label/value)
+            divider_x_common = clamp_x(divider_x_common)
+            canvas.line(divider_x_common, y_row3, divider_x_common, y_row0)
+
 
             # start x where left-value text should begin (a partir do divisor comum)
             value_gap_after_divider = 2  # texto começa logo após a linha (pequeno gap)
@@ -1190,58 +1072,28 @@ class PDFService:
                 value_start_x = value_start_base
                 _left_available = max(10, (col_x2) - value_start_x - 2)
 
-                # --- SHRINK-TO-FIT: reduz tamanho da fonte até caber (fallback: trunc + '…') ---
-                font_name = self.FONT_REGULAR
-                cur_font = float(value_font)
-                min_font = 6.0
+                # sem shrink-to-fit via fonte: truncamos com reticências se não couber
                 text_to_draw = _left_value_text or ''
-
-                # primeiro assegura fonte inicial
-                canvas.setFont(font_name, cur_font)
-
-                if canvas.stringWidth(text_to_draw, font_name, cur_font) > _left_available:
-                    # reduz progressivamente (passo 0.5) até caber ou atingir min_font
-                    while cur_font > min_font and canvas.stringWidth(text_to_draw, font_name, cur_font) > _left_available:
-                        cur_font -= 0.5
-                    canvas.setFont(font_name, cur_font)
-                    # se mesmo assim não couber, faz truncamento com reticências
-                    if canvas.stringWidth(text_to_draw, font_name, cur_font) > _left_available:
-                        while text_to_draw and canvas.stringWidth(text_to_draw + '…', font_name, cur_font) > _left_available:
-                            text_to_draw = text_to_draw[:-1]
-                        text_to_draw = (text_to_draw + '…') if text_to_draw else ''
-                else:
-                    # já cabe com font original
-                    canvas.setFont(font_name, cur_font)
+                if canvas.stringWidth(text_to_draw, self.FONT_REGULAR, value_font) > _left_available:
+                    while text_to_draw and canvas.stringWidth(text_to_draw + '…', self.FONT_REGULAR, value_font) > _left_available:
+                        text_to_draw = text_to_draw[:-1]
+                    text_to_draw = (text_to_draw + '…') if text_to_draw else ''
 
                 canvas.drawString(value_start_x, center_y, text_to_draw)
-                # restaura fonte padrão para próximos usos
-                canvas.setFont(self.FONT_REGULAR, value_font)
 
-                # --- coluna direita (mantém comportamento anterior mas com shrink-to-fit também) ---
+                # --- coluna direita (mantém comportamento anterior mas sem shrink de fonte) ---
                 canvas.setFont(self.FONT_BOLD, label_font)
                 canvas.drawString(col_x2 + right_label_padding, center_y, labels_right[i])
                 canvas.setFont(self.FONT_REGULAR, value_font)
 
                 value_text = (values_right[i] or '')
-                # largura disponível para o valor direito
                 _right_available = max(10, max_width)
 
-                # shrink-to-fit para o valor direito
-                font_name_r = self.FONT_REGULAR
-                cur_font_r = float(value_font)
                 text_to_draw_r = value_text or ''
-
-                canvas.setFont(font_name_r, cur_font_r)
-                if canvas.stringWidth(text_to_draw_r, font_name_r, cur_font_r) > _right_available:
-                    while cur_font_r > min_font and canvas.stringWidth(text_to_draw_r, font_name_r, cur_font_r) > _right_available:
-                        cur_font_r -= 0.5
-                    canvas.setFont(font_name_r, cur_font_r)
-                    if canvas.stringWidth(text_to_draw_r, font_name_r, cur_font_r) > _right_available:
-                        while text_to_draw_r and canvas.stringWidth(text_to_draw_r + '…', font_name_r, cur_font_r) > _right_available:
-                            text_to_draw_r = text_to_draw_r[:-1]
-                        text_to_draw_r = (text_to_draw_r + '…') if text_to_draw_r else ''
-                else:
-                    canvas.setFont(font_name_r, cur_font_r)
+                if canvas.stringWidth(text_to_draw_r, self.FONT_REGULAR, value_font) > _right_available:
+                    while text_to_draw_r and canvas.stringWidth(text_to_draw_r + '…', self.FONT_REGULAR, value_font) > _right_available:
+                        text_to_draw_r = text_to_draw_r[:-1]
+                    text_to_draw_r = (text_to_draw_r + '…') if text_to_draw_r else ''
 
                 value_x = col_x3 + right_value_padding
                 canvas.drawString(value_x, center_y, text_to_draw_r)
@@ -1268,7 +1120,7 @@ class PDFService:
             canvas.setFillColor(self.GRAY)
             canvas.rect(left, footer_y, usable_w, footer_h_local, stroke=0, fill=1)
             canvas.setFillColor(colors.black)
-            canvas.setFont(self.FONT_BOLD, max(7, int(self.BASE_VALUE_FONT_SIZE * best_found['scale']) + 1))
+            canvas.setFont(self.FONT_BOLD, max(7, int(self.BASE_VALUE_FONT_SIZE + 1)))
             canvas.drawCentredString(left + usable_w / 2.0, footer_y + footer_h_local / 2.0 - 3, "O SERVIÇO ACIMA FOI EXECUTADO SATISFATORIAMENTE")
 
             sig_bottom = footer_y + footer_h_local
@@ -1277,7 +1129,7 @@ class PDFService:
             canvas.rect(left, sig_bottom + sig_area_h_local, usable_w / 2.0, sig_header_h_local, stroke=0, fill=1)
             canvas.rect(mid, sig_bottom + sig_area_h_local, usable_w / 2.0, sig_header_h_local, stroke=0, fill=1)
             canvas.setFillColor(colors.black)
-            canvas.setFont(self.FONT_BOLD, max(6, int(self.BASE_LABEL_FONT_SIZE * best_found['scale'])))
+            canvas.setFont(self.FONT_BOLD, max(6, int(self.BASE_LABEL_FONT_SIZE)))
             canvas.drawCentredString(left + (usable_w / 4.0), sig_bottom + sig_area_h_local + sig_header_h_local / 2.0 - 2, "ASSINATURA DO COMANDANTE")
             canvas.drawCentredString(mid + (usable_w / 4.0), sig_bottom + sig_area_h_local + sig_header_h_local / 2.0 - 2, "ASSINATURA DO TÉCNICO")
 
