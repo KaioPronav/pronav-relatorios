@@ -1,5 +1,24 @@
 # PRONAV — Portal de Relatórios
 
+
+Módulos PDF:
+
+font_manager.py — encapsula registro de fontes e expõe FONT_REGULAR, FONT_BOLD.
+
+styles_builder.py — cria e retorna os styles usados por todo o serviço (mesmos nomes).
+
+header_drawer.py — contém HeaderDrawer com draw_header(canvas, doc_local, ...).
+
+footer_drawer.py — FooterDrawer com draw_signatures_and_footer e helper on_page_template.
+
+tables_builder.py — classes/funções: EquipmentTableBuilder, SectionsTableBuilder, ActivitiesTableBuilder — constroem Table/Flowables.
+
+story_builder.py — StoryBuilder monta o story completo (usa builders acima).
+
+utils.py — funções auxiliares do arquivo antigo que não são públicas (find logo, norm text etc).
+
+pdf_service.py — fachada: combina tudo e expõe PDFService com os mesmos métodos públicos e sem mudar parâmetros/retornos.
+
 ---
 
 ## 📌 Visão Geral
