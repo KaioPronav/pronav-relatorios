@@ -7,9 +7,8 @@ import io
 
 class HeaderDrawer:
     """
-    HeaderDrawer preserva a lógica original do draw_header.
-    Instancie passando as constantes de página que o código original
-    usava (MARG, usable_w, PAGE_W, header_height_base, header_row0, header_row, square_side).
+    HeaderDrawer: lê configurações de fonte do `config` (se fornecido) e aplica
+    prioridade: override absoluto em config > per-header config > fallback para base_title_font_size.
     """
 
     def __init__(self, config, font_regular, font_bold,
@@ -20,11 +19,11 @@ class HeaderDrawer:
         self.config = config
         self.FONT_REGULAR = font_regular
         self.FONT_BOLD = font_bold
-        self.BASE_TITLE_FONT_SIZE = base_title_font_size
-        self.LINE_WIDTH = line_width
+        self.BASE_TITLE_FONT_SIZE = float(base_title_font_size or 0.0)
+        self.LINE_WIDTH = float(line_width or 0.6)
         self.GRAY = gray_color
 
-        # estes são os valores iguais aos usados no draw_header original
+        # pagina/layout valores
         self.MARG = margin
         self.usable_w = usable_w
         self.PAGE_W = page_w
@@ -33,12 +32,51 @@ class HeaderDrawer:
         self.header_row = header_row
         self.square_side = square_side
 
-    def draw_header(self, canvas, doc_local, logo_bytes, report_request, ensure_upper_safe):
-        """
-        Reimplementa fielmente o draw_header original.
-        Chame: header.draw_header(canvas, doc_local, logo_bytes, report_request, ensure_upper_safe)
-        """
+        # --- carregar configurações específicas do header (se existirem) ---
+        # Cada chave pode ser >0 (override absoluto em pts) ou <=0 (usar fallback).
+        # Se nenhuma chave existir, usamos valores mínimos comentados na classe Config.
+        def _cfg(name, default):
+            v = getattr(self.config, name, None)
+            if v is None:
+                return float(default)
+            try:
+                return float(v)
+            except Exception:
+                return float(default)
 
+        self.HEADER_TITLE_FONT_SIZE = _cfg('HEADER_TITLE_FONT_SIZE', -1.0)
+        self.HEADER_TITLE_MIN_SIZE = _cfg('HEADER_TITLE_MIN_SIZE', 9.0)
+
+        self.HEADER_CONTACT_FONT_SIZE = _cfg('HEADER_CONTACT_FONT_SIZE', -1.0)
+        self.HEADER_CONTACT_MIN_SIZE = _cfg('HEADER_CONTACT_MIN_SIZE', 7.0)
+
+        self.HEADER_LABEL_FONT_SIZE = _cfg('HEADER_LABEL_FONT_SIZE', -1.0)
+        self.HEADER_LABEL_MIN_SIZE = _cfg('HEADER_LABEL_MIN_SIZE', 7.0)
+
+        self.HEADER_VALUE_FONT_SIZE = _cfg('HEADER_VALUE_FONT_SIZE', -1.0)
+        self.HEADER_VALUE_MIN_SIZE = _cfg('HEADER_VALUE_MIN_SIZE', 7.0)
+
+    def _resolve_font(self, override_size, min_size, base_size):
+        """
+        Resolve política de prioridade:
+        - se override_size > 0: usa override_size
+        - senão: usa max(min_size, int(base_size))
+        Retorna int (pts).
+        """
+        try:
+            ov = float(override_size)
+            if ov and ov > 0:
+                return int(max(min_size, ov))
+        except Exception:
+            pass
+        # fallback para base_size garantindo mínimo
+        try:
+            bs = float(base_size)
+        except Exception:
+            bs = float(min_size)
+        return int(max(min_size, round(bs)))
+
+    def draw_header(self, canvas, doc_local, logo_bytes, report_request, ensure_upper_safe):
         MARG = self.MARG
         usable_w = self.usable_w
         PAGE_W = self.PAGE_W
@@ -54,8 +92,6 @@ class HeaderDrawer:
 
         left_x = MARG
         right_x = MARG + usable_w
-        top_y = PAGE_W and (doc_local.pagesize[1] - doc_local.topMargin) or (doc_local.pagesize[1] - doc_local.topMargin)
-        # (mantive a expressão acima para garantir compatibilidade; usamos doc_local.topMargin)
         top_y = doc_local.pagesize[1] - doc_local.topMargin
         bottom_y = top_y - header_height_base
 
@@ -80,7 +116,7 @@ class HeaderDrawer:
         y_row0 = y_top - header_row0
         y_row1 = y_row0 - header_row
         y_row2 = y_row1 - header_row
-        y_row3 = y_row2 - header_row  # == bottom_y
+        y_row3 = y_row2 - header_row
 
         canvas.line(logo_x1, y_row0, right_x, y_row0)
         canvas.line(logo_x1, y_row1, right_x, y_row1)
@@ -113,10 +149,10 @@ class HeaderDrawer:
         # baseline inferior do header (igual ao y_row3)
         canvas.line(left_x, y_row3, right_x, y_row3)
 
-        # contact line (linha de contato/rodapé pequeno acima do cabeçalho)
+        # --- CONTACT LINE (pequeno texto central) ---
         try:
             contact_line = "PRONAV COMÉRCIO E SERVIÇOS LTDA.   |   CNPJ: 54.284.063/0001-46   |   Tel.: (22) 2141-2458   |   Cel.: (22) 99221-1893   |   service@pronav.com.br   |   www.pronav.com.br"
-            contact_font_size = max(7, int(self.BASE_TITLE_FONT_SIZE))
+            contact_font_size = self._resolve_font(self.HEADER_CONTACT_FONT_SIZE, self.HEADER_CONTACT_MIN_SIZE, self.BASE_TITLE_FONT_SIZE)
             contact_y = top_y + (0.05 * inch)
             canvas.setFont(self.FONT_REGULAR, contact_font_size)
             canvas.setFillColor(colors.HexColor('#333333'))
@@ -133,7 +169,8 @@ class HeaderDrawer:
         except Exception:
             pass
 
-        title_font_size = max(9, int(self.BASE_TITLE_FONT_SIZE))
+        # --- HEADER TITLE ("RELATÓRIO DE SERVIÇO") ---
+        title_font_size = self._resolve_font(self.HEADER_TITLE_FONT_SIZE, self.HEADER_TITLE_MIN_SIZE, self.BASE_TITLE_FONT_SIZE)
         canvas.setFont(self.FONT_BOLD, title_font_size)
         canvas.drawCentredString((sep_x1 + sep_x2) / 2.0, y_row0 + (header_row0 / 2.0) - 3, "RELATÓRIO DE SERVIÇO")
 
@@ -141,7 +178,7 @@ class HeaderDrawer:
         canvas.setLineWidth(self.LINE_WIDTH)
         canvas.line(sep_x1, y_row0, right_x, y_row0)
 
-        # logo image (from bytes if available, otherwise fallback text)
+        # --- draw logo (unchanged) ---
         logo_drawn = False
         try:
             if logo_bytes:
@@ -199,7 +236,7 @@ class HeaderDrawer:
 
         if not logo_drawn:
             try:
-                fsize = max(12, int(10))
+                fsize = self._resolve_font(self.HEADER_LABEL_FONT_SIZE, self.HEADER_LABEL_MIN_SIZE, 10)
                 canvas.setFont(self.FONT_BOLD, fsize)
                 canvas.setFillColor(colors.HexColor('#333333'))
                 canvas.drawCentredString(logo_x0 + square_side/2.0, y_row3 + header_height_base/2.0 - (fsize/4.0), "PRONAV")
@@ -207,8 +244,8 @@ class HeaderDrawer:
             except Exception:
                 pass
 
-        # labels & values (font sizes made equal para labels/values conforme config)
-        labels_left = ["NAVIO:", "CONTATO:", "LOCAL:"]
+        # --- labels & values: usar tamanhos configuráveis (label/value) ---
+        labels_left = ["NAVIO", "CONTATO", "LOCAL"]
         values_left = [
             ensure_upper_safe(getattr(report_request, 'NAVIO', '') or ''),
             ensure_upper_safe(getattr(report_request, 'CONTATO', '') or ''),
@@ -218,7 +255,7 @@ class HeaderDrawer:
                 ensure_upper_safe(getattr(report_request, 'ESTADO', '') or '')
             ]))
         ]
-        labels_right = ["CLIENTE", "OBRA:", "OS:"]
+        labels_right = ["CLIENTE", "OBRA", "OS"]
         values_right = [
             ensure_upper_safe(getattr(report_request, 'CLIENTE', '') or ''),
             ensure_upper_safe(getattr(report_request, 'OBRA', '') or ''),
@@ -234,9 +271,9 @@ class HeaderDrawer:
 
         max_width = col_x4 - col_x3 - right_value_padding
 
-        # compute unified font sizes (sem scaling)
-        label_font = max(7, int(self.BASE_TITLE_FONT_SIZE))
-        value_font = label_font  # mantém MESMO tamanho entre labels e values
+        # compute unified font sizes via resolver
+        label_font = self._resolve_font(self.HEADER_LABEL_FONT_SIZE, self.HEADER_LABEL_MIN_SIZE, self.BASE_TITLE_FONT_SIZE)
+        value_font = self._resolve_font(self.HEADER_VALUE_FONT_SIZE, self.HEADER_VALUE_MIN_SIZE, label_font)
 
         # --- calcula a posição comum do divisor vertical alinhada ao rótulo "CONTATO:" ---
         contact_label = labels_left[1]  # "CONTATO:"
@@ -246,11 +283,11 @@ class HeaderDrawer:
         divider_x_common = col_x0 + label_left_padding + contact_label_w + divider_gap_after_label
 
         # desenha o divisor vertical do bloco esquerdo EXATAMENTE de y_row0 até y_row3
-        canvas.setLineWidth(0.6)
+        canvas.setLineWidth(self.LINE_WIDTH)
         canvas.setStrokeColor(colors.black)
         canvas.line(divider_x_common, y_row3, divider_x_common, y_row0)
 
-        # restaura/divisores do lado direito (CLIENTE / OBRA / OS)
+        # restaura/divisores do lado direito
         offset_left_line = 2.0
         offset_right_line = 4.0
 
@@ -259,16 +296,15 @@ class HeaderDrawer:
 
         x_vert_1 = clamp_x(col_x2 + offset_left_line)
         x_vert_2 = clamp_x(col_x3 + offset_right_line)
-        # desenha as linhas verticais dentro dos limites da página
         canvas.line(x_vert_1, y_row3, x_vert_1, y_row0)
         canvas.line(x_vert_2, y_row3, x_vert_2, y_row0)
 
-        # desenha a linha divisória central (que você usava para separar label/value)
+        # desenha a linha divisória central (igual ao divisor comum)
         divider_x_common = clamp_x(divider_x_common)
         canvas.line(divider_x_common, y_row3, divider_x_common, y_row0)
 
         # start x where left-value text should begin (a partir do divisor comum)
-        value_gap_after_divider = 2  # texto começa logo após a linha (pequeno gap)
+        value_gap_after_divider = 2
         value_start_base = divider_x_common + value_gap_after_divider
 
         for i in range(3):
@@ -276,7 +312,7 @@ class HeaderDrawer:
             bottom = rows_y[i + 1]
             center_y = (top + bottom) / 2.0 - 3
 
-            # --- LABEL (começa próximo da borda esquerda) ---
+            # LABEL (esquerda)
             canvas.setFont(self.FONT_BOLD, label_font)
             canvas.setFillColor(colors.black)
             _label_text = (labels_left[i] or '').strip()
@@ -284,20 +320,19 @@ class HeaderDrawer:
             label_left_padding = 2
             label_x = col_x0 + label_left_padding
             _label_max_w = max(8, (col_x2) - label_x - 6)
+            # truncamento com reticências (mantém lógica anterior)
             if canvas.stringWidth(_label_text, self.FONT_BOLD, label_font) > _label_max_w:
                 while _label_text and canvas.stringWidth(_label_text + '…', self.FONT_BOLD, label_font) > _label_max_w:
                     _label_text = _label_text[:-1]
                 _label_text = (_label_text + '…') if _label_text else ''
             canvas.drawString(label_x, center_y, _label_text)
 
-            # --- VALOR ESQUERDO: começa logo após o divisor comum ---
+            # VALOR ESQUERDO
             canvas.setFont(self.FONT_REGULAR, value_font)
             _left_value_text = (values_left[i] or '').strip()
-
             value_start_x = value_start_base
             _left_available = max(10, (col_x2) - value_start_x - 2)
 
-            # sem shrink-to-fit via fonte: truncamos com reticências se não couber
             text_to_draw = _left_value_text or ''
             if canvas.stringWidth(text_to_draw, self.FONT_REGULAR, value_font) > _left_available:
                 while text_to_draw and canvas.stringWidth(text_to_draw + '…', self.FONT_REGULAR, value_font) > _left_available:
@@ -306,7 +341,7 @@ class HeaderDrawer:
 
             canvas.drawString(value_start_x, center_y, text_to_draw)
 
-            # --- coluna direita (mantém comportamento anterior mas sem shrink de fonte) ---
+            # coluna direita
             canvas.setFont(self.FONT_BOLD, label_font)
             canvas.drawString(col_x2 + right_label_padding, center_y, labels_right[i])
             canvas.setFont(self.FONT_REGULAR, value_font)
@@ -322,7 +357,6 @@ class HeaderDrawer:
 
             value_x = col_x3 + right_value_padding
             canvas.drawString(value_x, center_y, text_to_draw_r)
-            # restaura fonte padrão
             canvas.setFont(self.FONT_REGULAR, value_font)
 
         canvas.restoreState()

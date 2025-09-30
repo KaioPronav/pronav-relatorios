@@ -25,12 +25,17 @@ def sanitize_for_paragraph(text):
 def shrink_paragraph_to_fit(text, base_style, max_w, max_h, min_font=6):
     """
     Tenta reduzir o tamanho da fonte até que o Paragraph caiba em max_w x max_h.
-    Retorna o Paragraph ajustado.
+    Retorna o Paragraph ajustado. NÃO ABREVIAMOS texto (sem reticências).
+    Ajustes:
+     - força wordWrap='LTR' para quebra de palavras naturais;
+     - garante leading suficiente.
     """
     txt = sanitize_for_paragraph(str(text or ''))
-    # tentativa com estilo original
     try:
-        para = Paragraph(txt, base_style)
+        # usar uma cópia do estilo base para não modificar o original
+        s_try = ParagraphStyle(name="tmp_base", parent=base_style)
+        s_try.wordWrap = getattr(base_style, "wordWrap", "LTR") or "LTR"
+        para = Paragraph(txt, s_try)
         w, h = para.wrap(max_w, max_h)
         if h <= max_h:
             return para
@@ -40,9 +45,12 @@ def shrink_paragraph_to_fit(text, base_style, max_w, max_h, min_font=6):
     orig_size = getattr(base_style, "fontSize", 8.2)
     size = orig_size
 
+    # decremento suave sem nunca inserir reticências
     while size >= min_font:
         tmp_style = ParagraphStyle(name="tmp_shrink", parent=base_style)
+        tmp_style.wordWrap = getattr(base_style, "wordWrap", "LTR") or "LTR"
         tmp_style.fontSize = size
+        tmp_style.leading = max( (size * 1.06), (size + 1) )
         try:
             para_try = Paragraph(txt, tmp_style)
             w, h = para_try.wrap(max_w, max_h)
@@ -52,9 +60,13 @@ def shrink_paragraph_to_fit(text, base_style, max_w, max_h, min_font=6):
             pass
         size -= 0.5
 
+    # se não coube mesmo reduzindo até min_font -> devolve Paragraph com min_font
     tmp_style = ParagraphStyle(name="tmp_shrink_min", parent=base_style)
+    tmp_style.wordWrap = getattr(base_style, "wordWrap", "LTR") or "LTR"
     tmp_style.fontSize = min_font
+    tmp_style.leading = max((min_font * 1.06), (min_font + 1))
     return Paragraph(txt, tmp_style)
+
 
 
 class EquipmentTableBuilder:
