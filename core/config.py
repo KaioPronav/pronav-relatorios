@@ -101,3 +101,31 @@ class Config:
     # -------------------------
     DEBUG = False
     TESTING = False
+
+    # --- Imagens / Gallery PDF ---
+    # Máximo de colunas por linha (padrão 3)
+    IMAGE_MAX_COLUMNS = 3
+
+    # Máximo de imagens por página (padrão 9)
+    IMAGE_MAX_PER_PAGE = 9
+
+    # Tamanho máximo do arquivo processado (bytes). Ex: 400k ~= 400_000
+    IMAGE_MAX_BYTES = 400_000
+
+    # Largura máxima (px ou pts?) para redimensionamento antes da compressão (px)
+    # Ajuste conforme necessário; reduz dimensões grandes sem perder qualidade aparente.
+    IMAGE_MAX_WIDTH_PX = 1800
+    IMAGE_MAX_HEIGHT_PX = 1800
+
+    # Qualidade jpeg (0-100) inicial (irá iterar para caber em IMAGE_MAX_BYTES)
+    IMAGE_JPEG_QUALITY = 85
+
+    # Forçar geração de página paisagem quando a maioria das imagens de uma página for horizontal
+    IMAGE_AUTO_LANDSCAPE_PAGE = True
+
+    # Limite de uploads por relatório (segurança).
+    IMAGE_UPLOAD_LIMIT = 50
+
+    # Caso queira limitar dimensão impressa por célula (em pontos) — usamos para calcular scale
+    IMAGE_PRINT_MAX_CELL_HEIGHT = 160  # pts (aprox)
+    IMAGE_PRINT_MAX_CELL_WIDTH = None  # se None será calculado a partir do usable_w / columns

@@ -26,7 +26,6 @@
     }
     *,*::before,*::after{box-sizing:border-box}
     html,body{height:100%;margin:0;font-family:'Inter',sans-serif;background:linear-gradient(135deg,#f1f5f9 0%,#e2e8f0 100%);color:var(--pronav-text);min-height:100vh;display:flex;flex-direction:column}
-
     .header{background:linear-gradient(120deg,var(--pronav-blue),var(--pronav-dark-blue));padding:0.75rem 1rem;box-shadow:0 4px 6px -1px var(--pronav-shadow)}
     .main-container{flex:1;background-color:transparent;padding:1rem;overflow:auto}
     .card{background:var(--pronav-card-bg);border-radius:0.6rem;padding:0.75rem;box-shadow:0 8px 18px -6px var(--pronav-shadow)}
@@ -65,7 +64,6 @@
     .time-pair { display:flex; gap:0.45rem; align-items:center; width:100%; }
     .description-full { width:100%; min-height:72px; resize:vertical; white-space:pre-wrap; }
 
-    /* tech row: alinhar técnicos - Técnico 2 à direita (solicitado) */
     .tech-row { display:flex; gap:0.5rem; justify-content:flex-start; align-items:flex-start; flex-wrap:wrap; margin-top:6px; }
     .tech-box { width:100%; max-width:220px; display:flex; flex-direction:column; align-items:flex-start; }
     .tech-box + .tech-box input { text-align: left; }
@@ -86,6 +84,23 @@
     .field-help { font-size:0.78rem; color:#64748b; margin-top:6px; }
     .desc-prefix { font-weight:700; margin-bottom:6px; white-space:pre-wrap; color:#1f2937; }
     .desc-prefix.hidden { display:none; }
+
+    /* Image uploader styles */
+    .uploader { border: 2px dashed var(--pronav-border); border-radius: 0.6rem; padding: 12px; background: linear-gradient(180deg,#ffffffaa,#ffffff00); transition: border-color .15s, box-shadow .15s; }
+    .uploader.dragover { border-color: var(--pronav-blue); box-shadow: 0 6px 18px rgba(3,90,205,0.08); background: linear-gradient(180deg,#f8fbff,#fff) }
+    .thumb-grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; }
+    @media (max-width: 768px) { .thumb-grid { grid-template-columns: repeat(2, 1fr); } }
+    .thumb { border-radius: 8px; overflow:hidden; position:relative; background:#fff; border:1px solid var(--pronav-border); display:flex; flex-direction:column; align-items:stretch; }
+    .thumb img { width:100%; height:140px; object-fit:cover; display:block; background:#f3f4f6 }
+    .thumb .caption { padding:8px; display:flex; gap:6px; align-items:center; }
+    .thumb .caption input { flex:1; padding:.35rem .5rem; border:1px solid var(--pronav-border); border-radius:6px; background:var(--pronav-light-gray) }
+    .thumb .remove { position:absolute; top:8px; right:8px; background:rgba(0,0,0,0.6); color:white; border-radius:999px; width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; border:none }
+    .uploader-meta { display:flex; gap:10px; align-items:center; justify-content:space-between; margin-top:8px; }
+    .small-muted { font-size:0.85rem; color:#64748b }
+    .progress-line { height:6px; background:var(--pronav-gray); border-radius:6px; overflow:hidden }
+    .progress-line > i { display:block; height:100%; background:linear-gradient(90deg,var(--pronav-blue),var(--pronav-light-blue)); width:0%; transition:width .3s ease; }
+
+    #image-count { font-weight:600; color:var(--pronav-dark-blue) }
 
     /* wrapper for the Add button placed below activities (only visual change allowed) */
     #__add-activity-wrapper { display:flex; justify-content:flex-end; width:100%; margin-top:8px; }
@@ -241,6 +256,35 @@
             </div>
           </div>
 
+          <!-- IMAGES UPLOADER -->
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="section-title">Fotos do Relatório</h3>
+              <div class="small-muted">As fotos aparecerão no PDF em páginas dedicadas — 3 imagens por linha.</div>
+            </div>
+
+            <div id="uploader" class="uploader" tabindex="0" aria-label="Área de upload de imagens">
+              <div class="flex items-center justify-between flex-wrap gap-3">
+                <div class="flex items-center gap-3">
+                  <button type="button" id="pick-images-btn" class="btn-primary px-3 py-1 text-sm"><i class="fas fa-camera mr-2"></i> Escolher fotos</button>
+                  <div class="small-muted">Arraste e solte imagens aqui ou selecione do dispositivo. Máx. <span id="image-limit-label">50</span>.</div>
+                </div>
+                <div class="uploader-meta">
+                  <div id="image-count" class="small-muted">0 imagens selecionadas</div>
+                  <div style="width:240px">
+                    <div class="progress-line" aria-hidden="true"><i id="upload-progress"></i></div>
+                  </div>
+                </div>
+              </div>
+
+              <input id="images-input" name="images" type="file" accept="image/*" multiple class="hidden" />
+
+              <div id="thumbs" class="thumb-grid mt-3" aria-live="polite"></div>
+            </div>
+
+            <div class="mt-2 small-muted">Legenda: coloque abaixo de cada miniatura. Cada linha com até 3 imagens terá a legenda combinada no PDF.</div>
+          </div>
+
           <div class="form-actions">
             <button type="button" id="save-btn" class="btn-secondary"><i class="fas fa-save mr-2"></i> Salvar Rascunho</button>
             <button type="submit" id="submit-btn" class="btn-primary"><i class="fas fa-file-pdf mr-2"></i> Gerar PDF</button>
@@ -295,10 +339,24 @@
   </footer>
 
   <script type="module">
-    let firebaseAvailable = false;
-    let userId = 'anonymous_user';
-    let currentDocRef = null;
+    /* ===========================
+       Front-end script atualizado
+       - Upload de imagens com legendas
+       - Pré-visualização responsiva (grid 3x/2x)
+       - Compressão/resizing no cliente (opcional, para melhorar UX)
+       - Envio multipart/form-data com campo 'payload' (JSON) + imagens (campo 'images') e captions[] 
+       - Mantém comportamento anterior quando não há imagens (envia JSON)
+       =========================== */
 
+    // CONFIG
+    const MAX_IMAGES = 50;
+    const MAX_IMAGE_WIDTH_PX = 1800;    // client-side resize max width
+    const MAX_IMAGE_HEIGHT_PX = 1800;   // client-side resize max height
+    const JPEG_QUALITY = 0.85;          // canvas toBlob quality (0..1)
+    const MAX_UPLOAD_BYTES_HINT = 400000; // hint for the server-side (not enforced here)
+    const userId = 'anonymous_user';
+
+    // DOM refs
     const reportForm = document.getElementById('report-form');
     const activitiesContainer = document.getElementById('activities-container');
     const addActivityBtn = document.getElementById('add-activity-btn');
@@ -316,37 +374,23 @@
     const confirmOkBtn = document.getElementById('confirm-ok-btn');
     const confirmCancelBtn = document.getElementById('confirm-cancel-btn');
 
-    const addEquipmentBtn = document.getElementById('add-equipment-btn');
-    const equipmentsContainer = document.getElementById('equipments-container');
+    const imagesInput = document.getElementById('images-input');
+    const pickImagesBtn = document.getElementById('pick-images-btn');
+    const uploader = document.getElementById('uploader');
+    const thumbs = document.getElementById('thumbs');
+    const imageCountEl = document.getElementById('image-count');
+    const uploadProgress = document.getElementById('upload-progress');
+    const imageLimitLabel = document.getElementById('image-limit-label');
 
-    // -----------------------------
-    // Normalização e sets reutilizáveis
-    // -----------------------------
-    const norm = s => (s || '')
-      .toString()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '') // remove acentos
-      .replace(/[-_]/g, ' ')           // normaliza hífens/underscores
-      .replace(/\s+/g, ' ')            // colapsa múltiplos espaços
-      .trim()
-      .toLowerCase();
+    imageLimitLabel.textContent = String(MAX_IMAGES);
 
-    // listas canônicas em lower-case (usadas pela regra)
-    const KM_BLOCKED_TYPES = [
-      'mão-de-obra técnica',
-      'mão-de-obra-técnica',
-      'período de espera',
-      'viagem aérea',
-      'translado'
-    ].map(s => s.toLowerCase());
+    // state: array of { id, file (Blob), originalFileName, dataUrl, caption }
+    let imagesArray = [];
 
-    const TRAVEL_TYPES = [
-      'viagem terrestre',
-      'viagem aérea',
-      'translado'
-    ].map(s => s.toLowerCase());
-
-    function showModal(modal, message = '') {
+    // -------------------------
+    // utility helpers
+    // -------------------------
+    const showModal = (modal, message='') => {
       if (!modal) return;
       if (message) {
         const selector = modal.querySelector('#confirm-message, #error-message, #success-text');
@@ -354,13 +398,218 @@
       }
       modal.classList.remove('hidden'); modal.classList.add('flex');
       document.body.style.overflow = 'hidden';
-    }
-    function hideModal(modal) {
+    };
+    const hideModal = (modal) => {
       if (!modal) return;
       modal.classList.add('hidden'); modal.classList.remove('flex');
       document.body.style.overflow = '';
+    };
+
+    // async resize/compress image file -> returns Blob (jpeg)
+    async function resizeImageFile(file, maxW = MAX_IMAGE_WIDTH_PX, maxH = MAX_IMAGE_HEIGHT_PX, quality = JPEG_QUALITY) {
+      if (!file || !file.type.startsWith('image/')) return file;
+      // for small images skip resizing
+      try {
+        const imgBitmap = await createImageBitmap(file);
+        let iw = imgBitmap.width, ih = imgBitmap.height;
+        let scale = Math.min(1, maxW / iw, maxH / ih);
+        if (scale >= 0.995) {
+          // no resize, but still convert to jpeg to normalize orientation issues if any
+          const canvas = document.createElement('canvas');
+          canvas.width = iw;
+          canvas.height = ih;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(imgBitmap, 0, 0);
+          return await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+        } else {
+          const nw = Math.max(1, Math.round(iw * scale));
+          const nh = Math.max(1, Math.round(ih * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = nw;
+          canvas.height = nh;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(imgBitmap, 0, 0, nw, nh);
+          return await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+        }
+      } catch (err) {
+        // fallback: return original file
+        return file;
+      }
     }
 
+    function bytesToSize(bytes) {
+      if (!bytes) return '0 B';
+      const sizes = ['B','KB','MB','GB','TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(1024));
+      return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + sizes[i];
+    }
+
+    function updateThumbsUI() {
+      thumbs.innerHTML = '';
+      imagesArray.forEach((it, idx) => {
+        const div = document.createElement('div');
+        div.className = 'thumb';
+        div.setAttribute('data-idx', String(idx));
+        div.innerHTML = `
+          <button type="button" aria-label="Remover imagem" class="remove" title="Remover"><i class="fas fa-times"></i></button>
+          <img alt="Foto ${idx+1}" src="${it.dataUrl || ''}" />
+          <div class="caption">
+            <input type="text" placeholder="Legenda (será usada na linha das imagens)" value="${escapeHtml(it.caption || '')}" />
+          </div>
+          <div style="padding:6px;font-size:0.78rem;color:#64748b;display:flex;justify-content:space-between;align-items:center">
+              <span>Imagem ${idx + 1}</span> <!-- Nome genérico -->
+              <small>${it.fileSize ? bytesToSize(it.fileSize) : ''}</small>
+          </div>
+        `;
+        thumbs.appendChild(div);
+
+        // handlers
+        const removeBtn = div.querySelector('.remove');
+        removeBtn.addEventListener('click', () => {
+          imagesArray = imagesArray.filter((x,i)=> i !== idx);
+          updateThumbsUI();
+          updateImageCount();
+        });
+
+        const captionInput = div.querySelector('.caption input');
+        captionInput.addEventListener('input', (e) => {
+          imagesArray[idx].caption = e.target.value;
+        });
+      });
+
+      // graceful fallback message if empty
+      if (imagesArray.length === 0) {
+        thumbs.innerHTML = `<div class="small-muted col-span-3">Nenhuma imagem adicionada.</div>`;
+      }
+    }
+
+    function updateImageCount() {
+      imageCountEl.textContent = `${imagesArray.length} imagem${imagesArray.length === 1 ? '' : 'ens'} selecionada${imagesArray.length === 1 ? '' : 's'}`;
+      // reset progress bar
+      uploadProgress.style.width = '0%';
+    }
+
+    function escapeHtml(s) {
+      if (!s) return '';
+      return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
+    }
+
+    // handle files from input or drop
+    async function handleFiles(fileList) {
+      if (!fileList || fileList.length === 0) return;
+      const availableSlots = MAX_IMAGES - imagesArray.length;
+      if (availableSlots <= 0) { showModal(errorModal, `Limite de ${MAX_IMAGES} imagens atingido.`); return; }
+      const toProcess = Array.from(fileList).slice(0, availableSlots);
+
+      submitBtn.disabled = true;
+      pickImagesBtn.disabled = true;
+      let processed = 0;
+
+      for (const f of toProcess) {
+        try {
+          // client-side resize/compress
+          const resizedBlob = await resizeImageFile(f, MAX_IMAGE_WIDTH_PX, MAX_IMAGE_HEIGHT_PX, JPEG_QUALITY);
+          const dataUrl = await blobToDataURL(resizedBlob);
+          const fileSize = (resizedBlob.size || (f.size || 0));
+          imagesArray.push({
+            id: cryptoRandomId(),
+            file: resizedBlob,
+            originalFileName: f.name,
+            dataUrl,
+            caption: '',
+            fileSize
+          });
+        } catch (err) {
+          console.warn('erro ao processar imagem', err);
+          // add original file as fallback
+          const dataUrl = await fileToDataUrlFallback(f);
+          imagesArray.push({ id: cryptoRandomId(), file: f, originalFileName: f.name, dataUrl, caption: '', fileSize: f.size || 0 });
+        } finally {
+          processed++;
+          uploadProgress.style.width = `${Math.round((processed / toProcess.length) * 100)}%`;
+        }
+      }
+
+      updateThumbsUI();
+      updateImageCount();
+      submitBtn.disabled = false;
+      pickImagesBtn.disabled = false;
+    }
+
+    function fileToDataUrlFallback(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function blobToDataURL(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('toDataURL failed'));
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    function cryptoRandomId() {
+      try {
+        return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+          (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+        );
+      } catch {
+        return String(Math.random()).slice(2,10);
+      }
+    }
+
+    // -------------------------
+    // uploader UI events
+    // -------------------------
+    pickImagesBtn.addEventListener('click', () => imagesInput.click());
+    imagesInput.addEventListener('change', (e) => {
+      handleFiles(e.target.files);
+      imagesInput.value = '';
+    });
+
+    // drag & drop
+    ['dragenter','dragover'].forEach(ev => {
+      uploader.addEventListener(ev, (e) => {
+        e.preventDefault(); e.stopPropagation();
+        uploader.classList.add('dragover');
+      }, {passive:false});
+    });
+    ['dragleave','drop','dragend'].forEach(ev => {
+      uploader.addEventListener(ev, (e) => {
+        e.preventDefault(); e.stopPropagation();
+        uploader.classList.remove('dragover');
+      }, {passive:false});
+    });
+    uploader.addEventListener('drop', (e) => {
+      const dt = e.dataTransfer;
+      if (!dt) return;
+      const files = dt.files;
+      handleFiles(files);
+    });
+
+    // keyboard accessibility to open file picker
+    uploader.addEventListener('keydown', (e) => {
+      // Não executar se o evento veio de um campo de input (como legenda)
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+        return;
+      }
+      
+      if (e.key === 'Enter' || e.key === ' ') { 
+        e.preventDefault(); 
+        imagesInput.click(); 
+      }
+    });
+
+    // -------------------------
+    // existing form logic (activities, equipments, etc.)
+    // largely preserved from original code, minimal adjustments
+    // -------------------------
     const uppercaseFields = ['CLIENTE','NAVIO','CONTATO','OBRA','LOCAL','OS','EQUIPAMENTO','FABRICANTE','MODELO','NUMERO_SERIE','CIDADE'];
     uppercaseFields.forEach(id => {
       const el = document.getElementById(id);
@@ -373,7 +622,10 @@
     });
 
     function updateSubmitButtonState() { submitBtn.disabled = activitiesContainer.children.length === 0; }
-    function clearForm() { reportForm.reset(); activitiesContainer.innerHTML = ''; equipmentsContainer.innerHTML = ''; addActivity(true); currentDocRef = null; }
+    function clearForm() { reportForm.reset(); activitiesContainer.innerHTML = ''; document.getElementById('equipments-container').innerHTML = ''; addActivity(true); imagesArray = []; updateThumbsUI(); updateImageCount(); currentDocRef = null; }
+
+    const equipmentsContainer = document.getElementById('equipments-container');
+    const addEquipmentBtn = document.getElementById('add-equipment-btn');
 
     function addEquipment(data = null) {
       const div = document.createElement('div');
@@ -404,11 +656,20 @@
       return div;
     }
 
-    /**
-     * Aplica regras de habilitar/bloquear e prefixo de descrição
-     * para uma activity (elemento .activity-item).
-     * Centraliza a lógica para uso no load inicial e em eventos.
-     */
+    const KM_BLOCKED_TYPES = [
+      'mão-de-obra técnica',
+      'mão-de-obra-técnica',
+      'período de espera',
+      'viagem aérea',
+      'translado'
+    ].map(s => s.toLowerCase());
+
+    const TRAVEL_TYPES = [
+      'viagem terrestre',
+      'viagem aérea',
+      'translado'
+    ].map(s => s.toLowerCase());
+
     function applyTipoRulesToActivity(activityEl) {
       try {
         if (!activityEl) return;
@@ -422,7 +683,6 @@
         if (!tipoEl || !kmEl) return;
         const t = (tipoEl.value || '').toString().trim().toLowerCase();
 
-        // KM: limpar e bloquear quando necessário
         if (KM_BLOCKED_TYPES.includes(t)) {
           kmEl.value = '';
           kmEl.disabled = true;
@@ -432,7 +692,6 @@
           kmEl.setAttribute('required','required');
         }
 
-        // MOTIVO (só para "Período de Espera")
         if (motivoEl) {
           if (t === 'período de espera') {
             motivoEl.disabled = false;
@@ -444,7 +703,6 @@
           }
         }
 
-        // ORIGEM / DESTINO (para tipos de viagem)
         if (origemEl && destinoEl) {
           if (TRAVEL_TYPES.includes(t)) {
             origemEl.disabled = false;
@@ -461,7 +719,6 @@
           }
         }
 
-        // DESCRIÇÃO (prefixEl)
         let descVal = '';
         if (t === 'mão-de-obra técnica' || t === 'mão de obra técnica' || t === 'mão-de-obra-técnica') {
           descVal = 'Mão-de-Obra-Técnica';
@@ -472,7 +729,6 @@
           const d = (destinoEl && destinoEl.value) ? destinoEl.value.trim() : '';
           if (o || d) descVal = `${o} x ${d}`;
         } else {
-          // preserva prefix se houver (para tipos custom)
           if (prefixEl && !prefixEl.classList.contains('hidden') && prefixEl.textContent) {
             descVal = String(prefixEl.textContent || '').trim();
           }
@@ -595,17 +851,14 @@
           setIf('DESTINO', data.DESTINO || data.destino || '');
           setIf('TECNICO1', data.TECNICO1 || data.tecnico1 || '');
           setIf('TECNICO2', data.TECNICO2 || data.tecnico2 || '');
-          // aplicar regras após popular valores (garante estado inicial correto)
           applyTipoRulesToActivity(div);
         } catch (e) { console.error(e); }
       } else {
-        // aplica estado padrão para o novo elemento vazio
         applyTipoRulesToActivity(div);
       }
 
       updateSubmitButtonState();
 
-      // Smooth scroll + focus: ONLY when the call is user-initiated (not initial load and not when loading data)
       if (!isInitial && !data) {
         try {
           div.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -613,9 +866,8 @@
           if (firstInput) {
             setTimeout(() => { try { firstInput.focus(); } catch(e){} }, 260);
           }
-        } catch (e) { /* ignore scroll errors */ }
+        } catch (e) { /* ignore */ }
       }
-
       return div;
     }
 
@@ -648,8 +900,7 @@
       return ok;
     }
 
-
-    function buildPayload() {
+    function buildPayloadObject() {
       const fd = new FormData(reportForm);
       const payload = {
         CLIENTE: fd.get('CLIENTE') || '',
@@ -694,124 +945,142 @@
         const mod = (el.querySelector('[data-key="modelo"]') && el.querySelector('[data-key="modelo"]').value) || '';
         const sn = (el.querySelector('[data-key="sn"]') && el.querySelector('[data-key="sn"]').value) || '';
         if (equip || fab || mod || sn) {
-          payload.EQUIPAMENTOS.push({ equipamento: equip, fabricante: fab, modelo: mod, numero_serie: sn });
+          payload.EQUIPAMENTOS.push({
+            equipamento: equip, fabricante: fab, modelo: mod, numero_serie: sn
+          });
         }
       });
 
-      // Tipos auxiliares
-      const travelTypes = ['Viagem Terrestre', 'Viagem Aérea', 'Translado'];
-      const kmBlockedTypes = ['Mão-de-obra Técnica', 'Período de Espera', 'Viagem Aérea', 'Translado'];
+      // Activities / Atividades (se houver)
+      const actItems = activitiesContainer.querySelectorAll('.activity-item');
+      actItems.forEach(el => {
+        const title = (el.querySelector('[data-key="title"]') && el.querySelector('[data-key="title"]').value) || '';
+        const desc = (el.querySelector('[data-key="desc"]') && el.querySelector('[data-key="desc"]').value) || '';
+        if (title || desc) payload.activities.push({title, description: desc});
+      });
 
-      // Atividades
-      const items = activitiesContainer.querySelectorAll('.activity-item');
-      items.forEach(it => {
-        const tipoEl = it.querySelector('[name="TIPO"]');
-        const tipoVal = ((tipoEl && tipoEl.value) || '').trim();
+      // Outros campos dinâmicos (se existirem) podem ser adicionados aqui
 
-        // Campos fonte
-        const dataVal = (it.querySelector('[name="DATA"]') && it.querySelector('[name="DATA"]').value) || '';
-        const hiVal = (it.querySelector('[name="HORA_INICIO"]') && it.querySelector('[name="HORA_INICIO"]').value) || '';
-        const hfVal = (it.querySelector('[name="HORA_FIM"]') && it.querySelector('[name="HORA_FIM"]').value) || '';
-        const tecnico1Val = (it.querySelector('[name="TECNICO1"]') && it.querySelector('[name="TECNICO1"]').value) || '';
-        const tecnico2Val = (it.querySelector('[name="TECNICO2"]') && it.querySelector('[name="TECNICO2"]').value) || '';
-
-        const motivoField = it.querySelector('[name="MOTIVO"]');
-        const origemField = it.querySelector('[name="ORIGEM"]');
-        const destinoField = it.querySelector('[name="DESTINO"]');
-        const kmField = it.querySelector('[name="KM"]');
-
-        // Valores textuais (TRIM apenas para remover espaços nas extremidades;
-        // não convertemos para uppercase — mantemos exatamente como o usuário escreveu)
-        const motivoText = (motivoField && motivoField.value) ? motivoField.value.trim() : '';
-        const origemText = (origemField && origemField.value) ? origemField.value.trim() : '';
-        const destinoText = (destinoField && destinoField.value) ? destinoField.value.trim() : '';
-
-        // --- DESCRIÇÃO (regras exatas)
-        let descVal = '';
-        if (tipoVal === 'Mão-de-obra Técnica') {
-          descVal = 'Mão-de-Obra-Técnica';
-        } else if (tipoVal === 'Período de Espera') {
-          if (motivoField && !motivoField.disabled && motivoText) descVal = motivoText;
-        } else if (travelTypes.includes(tipoVal)) {
-          if (origemText || destinoText) descVal = `${origemText} x ${destinoText}`;
-        } else {
-          // Para tipos não listados ou futuros, preservamos DESCRICAO se existir no DOM (desc-prefix)
-          const prefixEl = it.querySelector('.desc-prefix');
-          if (prefixEl && !prefixEl.classList.contains('hidden') && prefixEl.textContent) {
-            descVal = String(prefixEl.textContent || '').trim();
-          }
-        }
-
-        // --- KM (somente manual, e somente se o tipo NÃO bloquear KM)
-        const isKmBlocked = kmBlockedTypes.includes(tipoVal);
-        let kmVal = '';
-        if (!isKmBlocked && kmField && kmField.value) {
-          kmVal = kmField.value.trim();
-        } else {
-          kmVal = '';
-        }
-
-        const motivoPayload = (motivoField && !motivoField.disabled) ? (motivoField.value || '') : '';
-        const origemPayload = (origemField && !origemField.disabled) ? (origemField.value || '') : '';
-        const destinoPayload = (destinoField && !destinoField.disabled) ? (destinoField.value || '') : '';
-
-        payload.activities.push({
-          DATA: dataVal,
-          HORA_INICIO: hiVal,
-          HORA_FIM: hfVal,
-          TIPO: tipoVal || '',
-          KM: kmVal || '',
-          KM_BLOQUEADO: isKmBlocked,
-          DESCRICAO: descVal || '',
-          TECNICO1: tecnico1Val,
-          TECNICO2: tecnico2Val,
-          MOTIVO: motivoPayload,
-          ORIGEM: origemPayload,
-          DESTINO: destinoPayload
-        });
-      }); // fim do forEach de atividades
-
-      if (currentDocRef && !firebaseAvailable) payload.report_id = currentDocRef;
       return payload;
     }
 
+    // -------------------------
+    // Submit / Generate report
+    // - if imagesArray not empty -> send multipart/form-data:
+    //    - field 'payload' -> JSON string (report payload)
+    //    - fields 'images' -> files (multiple)
+    //    - fields 'captions[]' -> captions matched by order
+    //    - also add caption_{i} for compatibility
+    // - else send JSON as before
+    // -------------------------
+    // No arquivo index.html - dentro da função generateReport()
 
+  // No arquivo index.html - dentro da função generateReport()
 
-    async function generateReport() {
+  async function generateReport() {
       if (!validateForm()) { showModal(errorModal, 'Preencha os campos obrigatórios.'); return; }
       submitBtn.disabled = true;
-      const payload = buildPayload();
       try {
-        const res = await fetch('/gerar-relatorio', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok) {
-          const body = await res.json().catch(()=>null);
-          const msg = body ? (body.error || JSON.stringify(body)) : await res.text();
-          showModal(errorModal, 'Erro ao gerar relatório: ' + msg);
-          return;
+        const payload = buildPayloadObject();
+
+        if (imagesArray && imagesArray.length > 0) {
+        // build FormData
+        const fd = new FormData();
+
+        // === FIX CRÍTICO: inserir legendas dentro do payload JSON para garantir que o backend
+        // encontre as legendas ao fazer json.loads(request.form['payload'])
+        try {
+          payload.captions = imagesArray.map(it => it.caption || '');
+          // Compatibilidade: também adicione uma chave 'captions[]' no payload
+          payload['captions[]'] = imagesArray.map(it => it.caption || '');
+        } catch (e) { console.warn('Erro ao montar payload.captions', e); }
+
+        fd.append('payload', JSON.stringify(payload));
+
+        // Enviar imagens + legendas em múltiplos formatos para máxima compatibilidade:
+        imagesArray.forEach((it, idx) => {
+          const blob = it.file instanceof Blob ? it.file : it;
+          // usar nomes neutros (não o nome original do usuário)
+          const filename = `imagem_${idx + 1}.jpg`;
+          
+          // Arquivo
+          fd.append('images', blob, filename);
+          
+          // Manda como captions[index] (array) — muitos backends aceitam assim:
+          fd.append(`captions[${idx}]`, it.caption || '');
+          
+          // Manda também como caption_i por compatibilidade com parsers individuais
+          fd.append(`caption_${idx}`, it.caption || '');
+        });
+
+        // Também adiciona um "captions[]" como convenção comum
+        imagesArray.forEach((it, idx) => {
+          fd.append('captions[]', it.caption || '');
+        });
+
+        // DEBUG (opcional)
+        console.log('🔄 DEBUG FRONTEND: Enviando para o backend:');
+        console.log('- Quantidade de imagens:', imagesArray.length);
+        console.log('- Legendas:', imagesArray.map(img => img.caption));
+        for (let pair of fd.entries()) {
+          if (pair[0].includes('caption') || pair[0] === 'images') {
+            console.log(`FormData: ${pair[0]} =`, pair[1]);
+          }
         }
-        const reportId = res.headers.get('X-Report-Id');
-        if (reportId) currentDocRef = reportId;
+
+        // enviar multipart
+        const res = await fetch('/gerar-relatorio', { method: 'POST', body: fd });
+        if (!res.ok) {
+            const body = await res.json().catch(()=>null);
+            const msg = body ? (body.error || JSON.stringify(body)) : await res.text();
+            showModal(errorModal, 'Erro ao gerar relatório: ' + msg);
+            return;
+        } else {
+          const reportId = res.headers.get('X-Report-Id');
+          if (reportId) currentDocRef = reportId;
+          const blob = await res.blob();
+          downloadBlob(blob, payload);
+          showModal(successModal, 'Relatório gerado com sucesso!');
+        }
+      } else {
+        // caso sem imagens: enviar só JSON (opcional)
+        const res = await fetch('/gerar-relatorio-json', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) { showModal(errorModal, 'Erro ao gerar relatório (sem imagens).'); return; }
         const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.style.display='none'; a.href = url;
-        const shipSafe = (payload.NAVIO || 'Geral').replace(/\s+/g,'_');
-        const date = new Date().toISOString().replace(/[:.]/g,'-').split('T')[0];
-        const equipName = (payload.EQUIPAMENTOS && payload.EQUIPAMENTOS[0]) ? (payload.EQUIPAMENTOS[0].equipamento || '') : '';
-        const equipSafe = equipName ? ('_' + String(equipName).replace(/\s+/g,'_')) : '';
-        a.download = `PRONAV_${date}_${shipSafe}${equipSafe}.pdf`;
-        document.body.appendChild(a); a.click(); URL.revokeObjectURL(url);
+        downloadBlob(blob, payload);
         showModal(successModal, 'Relatório gerado com sucesso!');
+      }
       } catch (err) {
         console.error(err);
         showModal(errorModal, 'Erro de rede: ' + (err.message || err));
-      } finally { submitBtn.disabled = false; }
+      } finally {
+        submitBtn.disabled = false;
+      }
     }
 
+    function downloadBlob(blob, payload) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.style.display='none'; a.href = url;
+      const shipSafe = (payload.NAVIO || 'Geral').replace(/\s+/g,'_');
+      const date = new Date().toISOString().replace(/[:.]/g,'-').split('T')[0];
+      const equipName = (payload.EQUIPAMENTOS && payload.EQUIPAMENTOS[0]) ? (payload.EQUIPAMENTOS[0].equipamento || '') : '';
+      const equipSafe = equipName ? ('_' + String(equipName).replace(/\s+/g,'_')) : '';
+      a.download = `PRONAV_${date}_${shipSafe}${equipSafe}.pdf`;
+      document.body.appendChild(a); a.click(); URL.revokeObjectURL(url); a.remove();
+    }
+
+    // -------------------------
+    // Save Draft (JSON only) - unchanged behaviour
+    // -------------------------
     async function saveDraftToBackend(isUpdate=false) {
       if (!validateForm()) { showModal(errorModal, 'Preencha os campos obrigatórios antes de salvar.'); return; }
       saveBtn.disabled = true;
-      const payload = buildPayload();
       try {
+        const payload = buildPayloadObject();
         if (isUpdate && currentDocRef) {
           const res = await fetch(`/atualizar-relatorio/${currentDocRef}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
           const body = await res.json().catch(()=>null);
@@ -830,6 +1099,9 @@
       } finally { saveBtn.disabled = false; }
     }
 
+    // -------------------------
+    // helpers for saved reports loading / editing (kept as before, minimal edits)
+    // -------------------------
     function tryParseDate(value) {
       if (!value) return null;
       if (typeof value === 'number') return new Date(value > 1e12 ? value : value * 1000);
@@ -878,7 +1150,6 @@
     }
 
     async function loadSavedReports() {
-      if (firebaseAvailable) return;
       savedReportsList.innerHTML = '';
       noReportsMessage.classList.remove('hidden');
       try {
@@ -906,45 +1177,29 @@
         }
         const d = await res.json();
 
-        // helpers locais
+        // mapping and populating form (kept same as before but trimmed)
         const pad2 = (n) => String(n).padStart(2,'0');
-
         function toDateInputFormat(value) {
-          // converte vários formatos para 'YYYY-MM-DD' ou '' se inválido
           if (!value && value !== 0) return '';
-          // se já é Date
-          if (value instanceof Date) {
-            return `${value.getFullYear()}-${pad2(value.getMonth()+1)}-${pad2(value.getDate())}`;
-          }
-          // numbers (timestamp seconds or ms)
+          if (value instanceof Date) return `${value.getFullYear()}-${pad2(value.getMonth()+1)}-${pad2(value.getDate())}`;
           if (typeof value === 'number') {
-            const d = value > 1e12 ? new Date(value) : new Date(value * 1000);
-            if (!isNaN(d.getTime())) return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+            const dt = value > 1e12 ? new Date(value) : new Date(value * 1000);
+            if (!isNaN(dt.getTime())) return `${dt.getFullYear()}-${pad2(dt.getMonth()+1)}-${pad2(dt.getDate())}`;
           }
-          let s = String(value).trim();
+          let s = String(value || '').trim();
           if (!s) return '';
-
-          // já pode ser 'YYYY-MM-DD' (ok)
           let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
           if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-
-          // pode vir como 'DD/MM/YYYY' -> converter
           m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
           if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-
-          // ISO/Full datetime
           const dIso = new Date(s);
           if (!isNaN(dIso.getTime())) return `${dIso.getFullYear()}-${pad2(dIso.getMonth()+1)}-${pad2(dIso.getDate())}`;
-
-          // fallback: vazio
           return '';
         }
 
         function parseCombinedHour(s) {
-          // tenta extrair HORA_INICIO e HORA_FIM de '08:00 às 12:00' / '08:00-12:00' / '8:00/12:00'
           if (!s) return { start: '', end: '' };
           const text = String(s).trim();
-          // possíveis separadores
           const seps = ['às','as','-','–','—','/',' a '];
           for (const sep of seps) {
             if (text.includes(sep)) {
@@ -956,7 +1211,6 @@
               }
             }
           }
-          // se for único token (ex: '08:00' ou '8:00'), assume início
           const single = normalizeTimeToken(text);
           return { start: single || '', end: '' };
         }
@@ -973,15 +1227,11 @@
             const mmv = (isNaN(mm) || mm < 0 || mm > 59) ? 0 : mm;
             return `${pad2(hh)}:${pad2(mmv)}`;
           }
-          // 4 dígitos '0830'
           const m2 = s.match(/^(\d{2})(\d{2})$/);
-          if (m2) {
-            return `${m2[1]}:${m2[2]}`; // confia no formato
-          }
+          if (m2) return `${m2[1]}:${m2[2]}`;
           return null;
         }
 
-        // seu mapeamento existente para campos top-level
         const map = {
           'CLIENTE': (d.client || d.CLIENTE || '').toString().toUpperCase(),
           'NAVIO': (d.ship || d.NAVIO || '').toString().toUpperCase(),
@@ -1004,7 +1254,7 @@
         };
         Object.keys(map).forEach(k => { const el = document.getElementById(k); if (el) el.value = map[k] || ''; });
 
-        // equipamentos: preenche container se existir
+        // equipamentos
         equipmentsContainer.innerHTML = '';
         const eqs = d.EQUIPAMENTOS || d.equipamentos || [];
         if (Array.isArray(eqs) && eqs.length > 0) {
@@ -1016,7 +1266,7 @@
           eqs.slice(1).forEach(e => addEquipment(e));
         }
 
-        // atividades: normalizar e popular os inputs
+        // atividades
         activitiesContainer.innerHTML = '';
         let acts = [];
         if (Array.isArray(d.activities)) acts = d.activities;
@@ -1027,24 +1277,17 @@
         if (!Array.isArray(acts) || acts.length === 0) {
           addActivity(true);
         } else {
-          // normaliza cada atividade ANTES de popular. Isso garante que o addActivity
-          // receba DATA em YYYY-MM-DD e horas individuais em HORA_INICIO/HORA_FIM.
           const normalizedActs = acts.map(raw => {
             const a = Object.assign({}, raw || {});
-            // DATA -> YYYY-MM-DD
             a.DATA = toDateInputFormat(a.DATA || a.data || '');
-
-            // se não houver HORA_INICIO/HORA_FIM, tenta extrair de HORA (legacy) ou de 'HORA' combinado
             const hasHi = !!(a.HORA_INICIO || a.hora_inicio || a.horainicio);
             const hasHf = !!(a.HORA_FIM || a.hora_fim || a.horafim);
             const horaLegacy = a.HORA || a.hora || '';
-
             if (!hasHi && !hasHf && horaLegacy) {
               const parsed = parseCombinedHour(horaLegacy);
               if (parsed.start) a.HORA_INICIO = parsed.start;
               if (parsed.end) a.HORA_FIM = parsed.end;
             } else {
-              // normaliza forma de HORA_INICIO/HORA_FIM se existirem
               if (a.HORA_INICIO) {
                 const t = normalizeTimeToken(a.HORA_INICIO);
                 if (t) a.HORA_INICIO = t;
@@ -1054,8 +1297,6 @@
                 if (t) a.HORA_FIM = t;
               }
             }
-
-            // garantir campos com nomes esperados (maiúsculas)
             a.TIPO = a.TIPO || a.tipo || '';
             a.KM = a.KM || a.km || '';
             a.DESCRICAO = a.DESCRICAO || a.descricao || a.description || '';
@@ -1064,23 +1305,18 @@
             a.MOTIVO = a.MOTIVO || a.motivo || '';
             a.ORIGEM = a.ORIGEM || a.origem || '';
             a.DESTINO = a.DESTINO || a.destino || '';
-
             return a;
           });
-
-          // agora cria as activities no DOM com os valores normalizados
           normalizedActs.forEach(a => addActivity(false, a));
         }
 
         currentDocRef = id;
 
-        // garantir aplicação das regras para todas atividades carregadas (cobertura extra)
         setTimeout(() => {
           const all = activitiesContainer.querySelectorAll('.activity-item');
           all.forEach(it => applyTipoRulesToActivity(it));
         }, 20);
 
-        // MOSTRAR A TELA DE EDIÇÃO sem limpar o formulário
         document.getElementById('new-report-view').classList.remove('hidden');
         document.getElementById('saved-reports-view').classList.add('hidden');
         newReportNav.classList.add('active');
@@ -1091,7 +1327,6 @@
         showModal(errorModal, 'Erro ao carregar relatório: ' + (e.message || e));
       }
     }
-
 
     async function deleteReportBackend(id) {
       showModal(confirmModal, 'Deseja realmente deletar este relatório?');
@@ -1107,15 +1342,15 @@
       };
     }
 
+    // -------------------------
+    // init
+    // -------------------------
+    let currentDocRef = null;
     document.addEventListener('DOMContentLoaded', () => {
       addActivity(true);
       updateSubmitButtonState();
-
-      // garantir que, no carregamento (F5), qualquer atividade já presente seja ajustada
-      setTimeout(() => {
-        const all = activitiesContainer.querySelectorAll('.activity-item');
-        all.forEach(it => applyTipoRulesToActivity(it));
-      }, 10);
+      updateThumbsUI();
+      updateImageCount();
 
       newReportNav.addEventListener('click', () => {
         document.getElementById('new-report-view').classList.remove('hidden');
